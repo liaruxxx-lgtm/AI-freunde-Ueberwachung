@@ -1,0 +1,12 @@
+.DS_Store
+.build/
+dist/
+__pycache__/
+*.pyc
+.codex/
+*.xcuserstate
+xcuserdata/
+
+# Die Freundedaten und importierten Medien sind privat und gehören nie ins Git-Repository.
+FreundeblickData/*
+!FreundeblickData/.gitkeep
