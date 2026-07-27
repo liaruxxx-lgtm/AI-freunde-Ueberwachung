@@ -85,19 +85,19 @@ struct DashboardView: View {
                 value: "\(store.data.people.count)",
                 title: "Personen",
                 systemImage: "person.2.fill",
-                tint: AppTheme.plum
+                tint: AppTheme.plumText
             )
             MetricCard(
                 value: "\(mutualFriendshipCount)",
                 title: "gegenseitige Verbindungen",
                 systemImage: "arrow.left.arrow.right",
-                tint: AppTheme.berry
+                tint: AppTheme.berryText
             )
             MetricCard(
                 value: "\(store.inferredGroups.count)",
                 title: "mögliche Gruppen",
                 systemImage: "circle.hexagongrid.fill",
-                tint: AppTheme.coral
+                tint: AppTheme.coralText
             )
             MetricCard(
                 value: "\(store.data.media.count)",
@@ -160,7 +160,7 @@ struct DashboardView: View {
                 HStack(spacing: 16) {
                     Image(systemName: "point.3.connected.trianglepath.dotted")
                         .font(.system(size: 34))
-                        .foregroundStyle(AppTheme.coral)
+                        .foregroundStyle(AppTheme.coralText)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Gruppen entstehen aus bestätigten Verbindungen")
                             .font(.headline)
@@ -281,7 +281,7 @@ struct PersonCard: View {
                         Spacer()
                         Text(ageText(person.birthday))
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(AppTheme.berry)
+                            .foregroundStyle(AppTheme.berryText)
                     }
 
                     if !person.temperamentTags.isEmpty {
@@ -320,11 +320,11 @@ struct GroupSuggestionCard: View {
                     ZStack {
                         Circle().fill(AppTheme.coral.opacity(0.14))
                         Image(systemName: "person.3.fill")
-                            .foregroundStyle(AppTheme.coral)
+                            .foregroundStyle(AppTheme.coralText)
                     }
                     .frame(width: 44, height: 44)
                     Spacer()
-                    StatusPill(text: "Vorschlag", systemImage: "sparkles", tint: AppTheme.coral)
+                    StatusPill(text: "Vorschlag", systemImage: "sparkles", tint: AppTheme.coralText)
                 }
 
                 Text(group.name)

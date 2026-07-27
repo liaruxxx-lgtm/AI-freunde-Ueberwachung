@@ -1,17 +1,95 @@
 import AppKit
+import ImageIO
 import SwiftUI
 
 enum ProfileImageCropError: LocalizedError {
     case unreadableImage
+    case imageTooLarge
     case renderingFailed
 
     var errorDescription: String? {
         switch self {
         case .unreadableImage:
             "Das ausgewählte Bild konnte nicht gelesen werden."
+        case .imageTooLarge:
+            "Das Bild ist für eine sichere Profilbild-Vorschau zu groß."
         case .renderingFailed:
             "Der Profilbild-Zuschnitt konnte nicht erstellt werden."
         }
+    }
+}
+
+enum ProfileImageSourceDecoder {
+    static let maximumInputBytes = 50 * 1_024 * 1_024
+    private static let maximumPixelCount = 50_000_000
+    private static let maximumDimension = 16_384
+    private static let previewMaximumDimension = 4_096
+
+    static func image(from data: Data) throws -> NSImage {
+        guard !data.isEmpty else {
+            throw ProfileImageCropError.unreadableImage
+        }
+        guard data.count <= maximumInputBytes else {
+            throw ProfileImageCropError.imageTooLarge
+        }
+        guard let source = CGImageSourceCreateWithData(
+            data as CFData,
+            nil
+        ),
+              CGImageSourceGetCount(source) > 0,
+              let properties = CGImageSourceCopyPropertiesAtIndex(
+                  source,
+                  0,
+                  nil
+              ) as? [CFString: Any],
+              let width = imageDimension(
+                  properties[kCGImagePropertyPixelWidth]
+              ),
+              let height = imageDimension(
+                  properties[kCGImagePropertyPixelHeight]
+              ),
+              width > 0,
+              height > 0
+        else {
+            throw ProfileImageCropError.unreadableImage
+        }
+
+        guard width <= maximumDimension,
+              height <= maximumDimension,
+              width <= maximumPixelCount / height
+        else {
+            throw ProfileImageCropError.imageTooLarge
+        }
+
+        let thumbnailDimension = min(
+            max(width, height),
+            previewMaximumDimension
+        )
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: thumbnailDimension,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(
+            source,
+            0,
+            options as CFDictionary
+        ) else {
+            throw ProfileImageCropError.unreadableImage
+        }
+
+        return NSImage(
+            cgImage: cgImage,
+            size: NSSize(width: cgImage.width, height: cgImage.height)
+        )
+    }
+
+    private static func imageDimension(_ value: Any?) -> Int? {
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+        return value as? Int
     }
 }
 
@@ -181,9 +259,11 @@ struct ProfileImageCropEditorView: View {
                 }
                 Spacer()
                 Button("Abbrechen") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Zuschneiden & verwenden", action: save)
                     .buttonStyle(.borderedProminent)
                     .tint(AppTheme.berry)
+                    .keyboardShortcut(.defaultAction)
             }
             .padding(20)
 
@@ -199,8 +279,12 @@ struct ProfileImageCropEditorView: View {
                         .onChange(of: zoom) { _, newZoom in
                             offset = constrained(offset, zoom: newZoom)
                         }
+                        .accessibilityLabel("Zoom")
+                        .accessibilityValue(
+                            "\(Int((zoom * 100).rounded())) Prozent"
+                        )
                     Image(systemName: "photo.fill")
-                        .foregroundStyle(AppTheme.berry)
+                        .foregroundStyle(AppTheme.berryText)
                     Text("\(Int((zoom * 100).rounded())) %")
                         .font(.caption.monospacedDigit().weight(.semibold))
                         .frame(width: 54, alignment: .trailing)
@@ -211,6 +295,38 @@ struct ProfileImageCropEditorView: View {
                         }
                     }
                 }
+
+                HStack(spacing: 8) {
+                    Text("Bild verschieben")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    nudgeButton(
+                        label: "Nach links",
+                        systemImage: "arrow.left",
+                        dx: -12,
+                        dy: 0
+                    )
+                    nudgeButton(
+                        label: "Nach oben",
+                        systemImage: "arrow.up",
+                        dx: 0,
+                        dy: -12
+                    )
+                    nudgeButton(
+                        label: "Nach unten",
+                        systemImage: "arrow.down",
+                        dx: 0,
+                        dy: 12
+                    )
+                    nudgeButton(
+                        label: "Nach rechts",
+                        systemImage: "arrow.right",
+                        dx: 12,
+                        dy: 0
+                    )
+                }
+                .frame(maxWidth: viewportSide)
 
                 Label(
                     "Ziehe das Bild mit der Maus und stelle die Größe mit dem Regler ein. Der sichtbare quadratische Ausschnitt wird als neue lokale Kopie gespeichert.",
@@ -280,7 +396,38 @@ struct ProfileImageCropEditorView: View {
                 }
         )
         .accessibilityLabel("Vorschau des Profilbild-Zuschnitts")
-        .accessibilityHint("Bild ziehen oder Zoom-Regler verwenden")
+        .accessibilityValue(
+            "Zoom \(Int((zoom * 100).rounded())) Prozent"
+        )
+        .accessibilityHint(
+            "Bild ziehen, die Pfeiltasten-Schaltflächen oder den Zoom-Regler verwenden"
+        )
+        .accessibilityAdjustableAction { direction in
+            let change: CGFloat = direction == .increment ? 0.1 : -0.1
+            zoom = min(max(zoom + change, 1), 4)
+            offset = constrained(offset, zoom: zoom)
+        }
+    }
+
+    private func nudgeButton(
+        label: String,
+        systemImage: String,
+        dx: CGFloat,
+        dy: CGFloat
+    ) -> some View {
+        Button {
+            offset = constrained(
+                CGSize(width: offset.width + dx, height: offset.height + dy),
+                zoom: zoom
+            )
+        } label: {
+            Label(label, systemImage: systemImage)
+                .labelStyle(.iconOnly)
+                .frame(width: 30, height: 26)
+        }
+        .buttonStyle(.bordered)
+        .help(label)
+        .accessibilityLabel(label)
     }
 
     private func constrained(_ value: CGSize, zoom: CGFloat) -> CGSize {

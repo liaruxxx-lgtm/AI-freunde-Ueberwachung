@@ -107,7 +107,7 @@ struct WebResearchView: View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "point.3.connected.trianglepath.dotted")
                 .font(.title3)
-                .foregroundStyle(AppTheme.plum)
+                .foregroundStyle(AppTheme.plumText)
 
             VStack(alignment: .leading, spacing: 5) {
                 Text("Hinweise ergeben Suchwege – noch keine Tatsachen")
@@ -195,7 +195,7 @@ struct WebResearchView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(query.clue)
                                 .font(.caption2.weight(.semibold))
-                                .foregroundStyle(AppTheme.berry)
+                                .foregroundStyle(AppTheme.berryText)
                             Text(query.text)
                                 .font(.caption.monospaced())
                                 .textSelection(.enabled)
@@ -308,7 +308,7 @@ struct WebResearchView: View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "hand.raised.fill")
                 .font(.title3)
-                .foregroundStyle(AppTheme.plum)
+                .foregroundStyle(AppTheme.plumText)
 
             VStack(alignment: .leading, spacing: 5) {
                 Text("Du entscheidest, was das Gerät verlässt")
@@ -385,7 +385,7 @@ struct WebResearchView: View {
             if let restrictionMessage {
                 Label(restrictionMessage, systemImage: "exclamationmark.shield.fill")
                     .font(.caption)
-                    .foregroundStyle(AppTheme.coral)
+                    .foregroundStyle(AppTheme.coralText)
             }
         }
     }
@@ -469,7 +469,7 @@ struct WebResearchView: View {
             } else if let browserMessage {
                 Label(browserMessage, systemImage: "exclamationmark.shield.fill")
                     .font(.caption)
-                    .foregroundStyle(AppTheme.coral)
+                    .foregroundStyle(AppTheme.coralText)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .surfaceCard(padding: 10)
             } else {
@@ -491,7 +491,7 @@ struct WebResearchView: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: socialIcon(for: result.url))
-                    .foregroundStyle(AppTheme.berry)
+                    .foregroundStyle(AppTheme.berryText)
                     .frame(width: 22)
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -504,7 +504,7 @@ struct WebResearchView: View {
                 Spacer()
                 Text("Möglicher Treffer")
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(AppTheme.plum)
+                    .foregroundStyle(AppTheme.plumText)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(AppTheme.plum.opacity(0.1), in: Capsule())
@@ -549,7 +549,7 @@ struct WebResearchView: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .top) {
                 Image(systemName: "text.book.closed.fill")
-                    .foregroundStyle(AppTheme.berry)
+                    .foregroundStyle(AppTheme.berryText)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(result.title)
                         .font(.callout.weight(.semibold))
@@ -595,7 +595,7 @@ struct WebResearchView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Image(systemName: "checkmark.shield.fill")
-                    .foregroundStyle(AppTheme.berry)
+                    .foregroundStyle(AppTheme.berryText)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Treffer ausgewählt: \(page.host)")
                         .font(.callout.weight(.semibold))
@@ -933,7 +933,7 @@ private struct ResearchCandidateImportSheet: View {
             HStack(spacing: 12) {
                 Image(systemName: "checkmark.seal.fill")
                     .font(.title2)
-                    .foregroundStyle(AppTheme.berry)
+                    .foregroundStyle(AppTheme.berryText)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Geprüfte Angabe übernehmen")
                         .font(.title3.weight(.bold))
@@ -967,7 +967,7 @@ private struct ResearchCandidateImportSheet: View {
                 systemImage: "exclamationmark.shield.fill"
             )
             .font(.caption)
-            .foregroundStyle(AppTheme.coral)
+            .foregroundStyle(AppTheme.coralText)
             .surfaceCard(padding: 10)
 
             HStack {

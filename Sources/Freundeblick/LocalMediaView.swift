@@ -3,10 +3,14 @@ import AppKit
 import SwiftUI
 
 struct LocalMediaView: View {
+    @EnvironmentObject private var store: LibraryStore
+    @AppStorage("allowMediaPreviews") private var allowMediaPreviews = true
+
     let media: MediaItem?
     var cornerRadius: CGFloat = 18
 
     @State private var image: NSImage?
+    @State private var previewUnavailable = false
 
     var body: some View {
         ZStack {
@@ -19,26 +23,46 @@ struct LocalMediaView: View {
                     )
                 )
 
-            if let image {
+            if let image, allowMediaPreviews {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
             } else {
-                Image(systemName: media?.kind == .video ? "video.fill" : "person.crop.circle.fill")
+                Image(systemName: placeholderSymbol)
                     .font(.system(size: 38, weight: .medium))
                     .foregroundStyle(.white.opacity(0.9))
                     .symbolRenderingMode(.hierarchical)
             }
+
+            if previewUnavailable {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(7)
+                    .background(AppTheme.coral, in: Circle())
+                    .padding(8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .help("Die Mediendatei fehlt oder kann nicht geöffnet werden.")
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .task(id: media?.id) {
-            image = await loadImage()
+        .task(id: previewTaskID) {
+            image = nil
+            previewUnavailable = false
+            guard allowMediaPreviews else { return }
+            let loadedImage = await loadImage()
+            image = loadedImage
+            previewUnavailable = media != nil && loadedImage == nil
         }
+        .accessibilityLabel(accessibilityDescription)
     }
 
     private func loadImage() async -> NSImage? {
         guard let media else { return nil }
-        let url = LibraryPaths.mediaDirectory.appendingPathComponent(media.storedFilename)
+        let url = store.mediaURL(for: media)
 
         if media.kind == .image {
             return NSImage(contentsOf: url)
@@ -53,5 +77,45 @@ struct LocalMediaView: View {
         } catch {
             return nil
         }
+    }
+
+    private var placeholderSymbol: String {
+        if !allowMediaPreviews, media != nil {
+            return "eye.slash.fill"
+        }
+        if previewUnavailable {
+            return "photo.badge.exclamationmark"
+        }
+        return media?.kind == .video
+            ? "video.fill"
+            : "person.crop.circle.fill"
+    }
+
+    private var accessibilityDescription: String {
+        guard let media else {
+            return "Kein Profilbild"
+        }
+        if !allowMediaPreviews {
+            return "\(media.originalFilename), Vorschau ausgeblendet"
+        }
+        if previewUnavailable {
+            return "\(media.originalFilename), Vorschau nicht verfügbar"
+        }
+        return media.originalFilename
+    }
+
+    private var previewTaskID: String {
+        guard let media else {
+            return "none-\(allowMediaPreviews)"
+        }
+        let url = store.mediaURL(for: media)
+        let values = try? url.resourceValues(
+            forKeys: [.contentModificationDateKey, .fileSizeKey]
+        )
+        let modification = values?.contentModificationDate?
+            .timeIntervalSinceReferenceDate ?? -1
+        let fileSize = values?.fileSize ?? -1
+        return "\(media.id.uuidString)-\(allowMediaPreviews)-"
+            + "\(media.originalFilename)-\(modification)-\(fileSize)"
     }
 }

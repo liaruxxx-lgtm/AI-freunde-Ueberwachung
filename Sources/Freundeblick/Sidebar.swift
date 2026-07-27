@@ -68,7 +68,7 @@ struct Sidebar: View {
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 10) {
                 Image(systemName: "lock.shield.fill")
-                    .foregroundStyle(AppTheme.plum)
+                    .foregroundStyle(AppTheme.plumText)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Lokal gespeichert")
                         .font(.caption.weight(.semibold))

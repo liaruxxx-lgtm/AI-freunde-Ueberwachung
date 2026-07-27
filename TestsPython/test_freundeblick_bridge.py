@@ -10,6 +10,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 
 WORKSPACE = Path(__file__).resolve().parents[1]
@@ -214,6 +215,16 @@ class LibraryTestCase(unittest.TestCase):
         )
         self.assertFalse(self.library.metadata["readOnly"])
 
+    def test_database_leaf_symlink_is_rejected(self) -> None:
+        symlink_path = self.data_directory / "linked-friends.json"
+        symlink_path.symlink_to(self.data_path)
+
+        with self.assertRaisesRegex(
+            FriendLibraryInputError,
+            "symbolische Verknüpfung",
+        ):
+            FriendLibrary.from_path(symlink_path)
+
     def test_legacy_people_without_links_load_with_an_empty_list(self) -> None:
         result = self.library.get_person("Bo Beispiel")
         self.assertEqual(result["person"]["links"], [])
@@ -291,7 +302,7 @@ class LibraryTestCase(unittest.TestCase):
         self.assertTrue(group["id"].startswith("inferred-"))
         self.assertIn("nicht als Fakt", group["explanation"])
 
-    def test_persisted_group_suppresses_fallback_inference(self) -> None:
+    def test_unrelated_persisted_group_does_not_suppress_inference(self) -> None:
         payload = copy.deepcopy(self.payload)
         payload["groups"] = [
             {
@@ -307,7 +318,39 @@ class LibraryTestCase(unittest.TestCase):
         alternate_path = self.data_directory / "with-group.json"
         alternate_path.write_text(json.dumps(payload), encoding="utf-8")
         result = FriendLibrary.from_path(alternate_path).get_groups()
-        self.assertEqual(result["counts"], {"persisted": 1, "inferred": 0})
+        self.assertEqual(result["counts"], {"persisted": 1, "inferred": 1})
+        self.assertEqual(
+            result["inferredGroups"][0]["memberIDs"],
+            ["person-ada", "person-bo", "person-cleo"],
+        )
+
+    def test_identical_manual_or_rejected_group_suppresses_duplicate(self) -> None:
+        for status in ("manual", "rejected"):
+            with self.subTest(status=status):
+                payload = copy.deepcopy(self.payload)
+                payload["groups"] = [
+                    {
+                        "id": f"group-{status}",
+                        "name": "Gespeicherte Gruppe",
+                        "memberIDs": [
+                            "person-ada",
+                            "person-bo",
+                            "person-cleo",
+                        ],
+                        "status": status,
+                        "confidence": 1.0,
+                        "explanation": "Bereits gespeichert.",
+                        "createdAt": "2026-05-01T10:00:00Z",
+                    }
+                ]
+                alternate_path = self.data_directory / f"with-{status}-group.json"
+                alternate_path.write_text(json.dumps(payload), encoding="utf-8")
+
+                result = FriendLibrary.from_path(alternate_path).get_groups()
+
+                self.assertEqual(
+                    result["counts"], {"persisted": 1, "inferred": 0}
+                )
 
     def test_media_previews_only_expose_paths_inside_data_directory(self) -> None:
         result = self.library.get_media_previews("Ada Beispiel", limit=10)
@@ -398,11 +441,35 @@ class LibraryTestCase(unittest.TestCase):
         self.assertEqual(updated["person"]["summary"], "Mag ruhige Cafés.")
         self.assertIsNone(updated["person"]["location"])
 
+        details_updated = call_tool(
+            self.library,
+            "save_person",
+            {
+                "person": person_id,
+                "profileDetails": {
+                    "favoriteColors": ["Grün"],
+                    "favoriteFoods": [],
+                },
+            },
+        )
+        self.assertEqual(
+            details_updated["person"]["profileDetails"]["favoriteColors"],
+            ["Grün"],
+        )
+        self.assertNotIn(
+            "favoriteFoods", details_updated["person"]["profileDetails"]
+        )
+        self.assertEqual(
+            details_updated["person"]["profileDetails"]["custom:Lieblingswort"],
+            ["Moin"],
+        )
+
         payload = json.loads(self.data_path.read_text(encoding="utf-8"))
         stored = next(person for person in payload["people"] if person["id"] == person_id)
         self.assertEqual(stored["birthday"], "2001-03-04T00:00:00Z")
         self.assertEqual(stored["interests"], ["Lesen"])
-        self.assertEqual(stored["profileDetails"]["favoriteColors"], ["Blau"])
+        self.assertEqual(stored["profileDetails"]["favoriteColors"], ["Grün"])
+        self.assertNotIn("favoriteFoods", stored["profileDetails"])
         self.assertEqual(
             created["person"]["profileDetails"]["custom:Lieblingswort"],
             ["Moin"],
@@ -415,6 +482,129 @@ class LibraryTestCase(unittest.TestCase):
             any(path.name.startswith(".friends-") for path in self.data_directory.iterdir())
         )
 
+    def test_write_rotates_previous_and_current_backup(self) -> None:
+        previous_path = self.data_directory / "friends.previous.json"
+        backup_path = self.data_directory / "friends.backup.json"
+        original_contents = self.data_path.read_bytes()
+
+        call_tool(
+            self.library,
+            "save_person",
+            {"person": "person-bo", "summary": "Erste Änderung"},
+        )
+        first_saved_contents = self.data_path.read_bytes()
+
+        self.assertEqual(previous_path.read_bytes(), original_contents)
+        self.assertEqual(backup_path.read_bytes(), first_saved_contents)
+        self.assertEqual(
+            json.loads(backup_path.read_text(encoding="utf-8"))["people"][1][
+                "summary"
+            ],
+            "Erste Änderung",
+        )
+
+        call_tool(
+            self.library,
+            "save_person",
+            {"person": "person-bo", "summary": "Zweite Änderung"},
+        )
+        second_saved_contents = self.data_path.read_bytes()
+
+        self.assertEqual(previous_path.read_bytes(), first_saved_contents)
+        self.assertEqual(backup_path.read_bytes(), second_saved_contents)
+
+    def test_failed_main_write_restores_existing_backup(self) -> None:
+        previous_path = self.data_directory / "friends.previous.json"
+        backup_path = self.data_directory / "friends.backup.json"
+        original_contents = self.data_path.read_bytes()
+        old_backup = b'{"oldBackup": true}\n'
+        backup_path.write_bytes(old_backup)
+        real_replace = os.replace
+
+        def fail_main_replace(
+            source: str | os.PathLike[str],
+            target: str | os.PathLike[str],
+        ) -> None:
+            if Path(target).resolve() == self.data_path.resolve():
+                raise OSError("synthetic main write failure")
+            real_replace(source, target)
+
+        with patch(
+            "freundeblick_mcp.os.replace",
+            side_effect=fail_main_replace,
+        ):
+            with self.assertRaisesRegex(OSError, "synthetic main write failure"):
+                call_tool(
+                    self.library,
+                    "save_person",
+                    {"person": "person-bo", "summary": "Darf nicht bleiben"},
+                )
+
+        self.assertEqual(self.data_path.read_bytes(), original_contents)
+        self.assertEqual(previous_path.read_bytes(), original_contents)
+        self.assertEqual(backup_path.read_bytes(), old_backup)
+        self.assertFalse(
+            any(
+                path.name.endswith(".tmp")
+                for path in self.data_directory.iterdir()
+            )
+        )
+
+    def test_failed_main_write_removes_new_backup_if_none_existed(self) -> None:
+        backup_path = self.data_directory / "friends.backup.json"
+        original_contents = self.data_path.read_bytes()
+        real_replace = os.replace
+
+        def fail_main_replace(
+            source: str | os.PathLike[str],
+            target: str | os.PathLike[str],
+        ) -> None:
+            if Path(target).resolve() == self.data_path.resolve():
+                raise OSError("synthetic main write failure")
+            real_replace(source, target)
+
+        with patch(
+            "freundeblick_mcp.os.replace",
+            side_effect=fail_main_replace,
+        ):
+            with self.assertRaisesRegex(OSError, "synthetic main write failure"):
+                call_tool(
+                    self.library,
+                    "save_person",
+                    {"person": "person-bo", "summary": "Darf nicht bleiben"},
+                )
+
+        self.assertEqual(self.data_path.read_bytes(), original_contents)
+        self.assertFalse(backup_path.exists())
+
+    def test_write_rejects_future_schema_without_creating_backups(self) -> None:
+        future_payload = copy.deepcopy(self.payload)
+        future_payload["schemaVersion"] = 2
+        self.data_path.write_text(
+            json.dumps(future_payload, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        self.library = FriendLibrary.from_path(self.data_path)
+        original_contents = self.data_path.read_bytes()
+
+        with self.assertRaisesRegex(
+            FriendLibraryInputError,
+            "Datenbankversion 2",
+        ):
+            call_tool(
+                self.library,
+                "save_person",
+                {"person": "person-bo", "summary": "Nicht schreiben"},
+            )
+
+        self.assertEqual(self.data_path.read_bytes(), original_contents)
+        self.assertFalse(
+            (self.data_directory / "friends.previous.json").exists()
+        )
+        self.assertFalse(
+            (self.data_directory / "friends.backup.json").exists()
+        )
+
     def test_save_profile_link_is_safe_and_idempotent_by_url(self) -> None:
         first = call_tool(
             self.library,
@@ -424,6 +614,7 @@ class LibraryTestCase(unittest.TestCase):
                 "url": "https://example.com/bo",
                 "platform": "website",
                 "title": "Bos Seite",
+                "handle": "@bo",
             },
         )
         second = call_tool(
@@ -443,6 +634,22 @@ class LibraryTestCase(unittest.TestCase):
         uuid.UUID(first["link"]["id"])
         self.assertTrue(second["link"]["confirmed"])
 
+        partial_update = call_tool(
+            self.library,
+            "save_profile_link",
+            {
+                "person": "person-bo",
+                "linkID": first["link"]["id"],
+                "url": "https://example.com/bo/aktuell",
+            },
+        )
+        self.assertEqual(partial_update["action"], "updated")
+        self.assertEqual(partial_update["link"]["platform"], "website")
+        self.assertEqual(partial_update["link"]["kind"], "website")
+        self.assertEqual(partial_update["link"]["title"], "Bos neue Seite")
+        self.assertEqual(partial_update["link"]["handle"], "@bo")
+        self.assertTrue(partial_update["link"]["confirmed"])
+
         with self.assertRaises(FriendLibraryInputError):
             call_tool(
                 self.library,
@@ -459,7 +666,8 @@ class LibraryTestCase(unittest.TestCase):
                 "fromPerson": "person-ada",
                 "toPerson": "person-bo",
                 "status": "confirmed",
-                "source": "manual",
+                "source": "imported",
+                "notes": "Bleibt erhalten.",
                 "reciprocal": True,
             },
         )
@@ -472,6 +680,24 @@ class LibraryTestCase(unittest.TestCase):
             all(relationship["status"] == "confirmed" for relationship in result["relationships"])
         )
 
+        partial_update = call_tool(
+            self.library,
+            "save_relationship",
+            {
+                "fromPerson": "person-ada",
+                "toPerson": "person-bo",
+                "reciprocal": True,
+            },
+        )
+        self.assertTrue(
+            all(
+                relationship["status"] == "confirmed"
+                and relationship["source"] == "imported"
+                and relationship["notes"] == "Bleibt erhalten."
+                for relationship in partial_update["relationships"]
+            )
+        )
+
     def test_save_family_relationship_uses_inverse_role_and_is_pairwise(self) -> None:
         result = call_tool(
             self.library,
@@ -481,6 +707,9 @@ class LibraryTestCase(unittest.TestCase):
                 "toPerson": "person-bo",
                 "kind": "family",
                 "familyRole": "parent",
+                "status": "confirmed",
+                "source": "personStatement",
+                "notes": "Direkt bestätigt.",
                 "reciprocal": True,
             },
         )
@@ -489,6 +718,30 @@ class LibraryTestCase(unittest.TestCase):
             [relationship["familyRole"] for relationship in result["relationships"]],
             ["parent", "child"],
         )
+
+        partial_update = call_tool(
+            self.library,
+            "save_relationship",
+            {
+                "fromPerson": "person-ada",
+                "toPerson": "person-bo",
+                "kind": "family",
+                "reciprocal": True,
+            },
+        )
+        self.assertEqual(
+            [relationship["familyRole"] for relationship in partial_update["relationships"]],
+            ["parent", "child"],
+        )
+        self.assertTrue(
+            all(
+                relationship["status"] == "confirmed"
+                and relationship["source"] == "personStatement"
+                and relationship["notes"] == "Direkt bestätigt."
+                for relationship in partial_update["relationships"]
+            )
+        )
+
         relationships = self.library.get_relationships("person-ada")
         self.assertEqual(len(relationships["mutualFamilies"]), 1)
         self.assertEqual(relationships["counts"]["mutualFamilies"], 1)
@@ -524,11 +777,30 @@ class LibraryTestCase(unittest.TestCase):
                 "value": "mag kooperative Brettspiele",
                 "status": "confirmed",
                 "confidence": 1,
+                "source": "imported",
+                "evidenceMediaIDs": ["media-ada"],
             },
         )
         self.assertEqual(updated["action"], "updated")
         self.assertEqual(updated["observation"]["status"], "confirmed")
         self.assertEqual(updated["observation"]["value"], "mag kooperative Brettspiele")
+
+        partial_update = call_tool(
+            self.library,
+            "save_observation",
+            {
+                "person": "person-bo",
+                "observationID": observation_id,
+                "category": "interest",
+                "value": "mag komplexe kooperative Brettspiele",
+            },
+        )
+        self.assertEqual(partial_update["observation"]["status"], "confirmed")
+        self.assertEqual(partial_update["observation"]["confidence"], 1.0)
+        self.assertEqual(partial_update["observation"]["source"], "imported")
+        self.assertEqual(
+            partial_update["observation"]["evidenceMediaIDs"], ["media-ada"]
+        )
 
 
 class MCPProtocolTestCase(LibraryTestCase):

@@ -28,6 +28,10 @@
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSCameraUsageDescription</key>
+    <string>Freundeblick verwendet die Kamera nur, damit du ein Profilbild aufnehmen kannst. Die Aufnahme bleibt lokal.</string>
+    <key>NSCameraUseContinuityCameraDeviceType</key>
+    <true/>
     <key>NSHumanReadableCopyright</key>
     <string>Privates, lokales Freundewissen.</string>
 </dict>

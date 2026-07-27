@@ -35,6 +35,7 @@ SUPPORTED_PROTOCOL_VERSIONS = (
 )
 SERVER_NAME = "freundeblick"
 SERVER_VERSION = "0.2.0"
+CURRENT_SCHEMA_VERSION = 1
 
 
 class FriendLibraryError(Exception):
@@ -163,6 +164,11 @@ def resolve_data_path(explicit_path: str | os.PathLike[str] | None = None) -> Pa
 
     candidates = data_path_candidates(explicit_path)
     for candidate in candidates:
+        if candidate.is_symlink():
+            raise FriendLibraryInputError(
+                "FreundeBlick-Datenbank darf keine symbolische "
+                f"Verknüpfung sein: {candidate}"
+            )
         if candidate.is_file():
             return candidate.resolve()
     attempted = ", ".join(str(path) for path in candidates)
@@ -385,41 +391,96 @@ class FriendLibrary:
             )
         return value
 
+    @staticmethod
+    def _writable_schema_version(payload: Mapping[str, Any]) -> int:
+        version = _first(
+            payload,
+            "schemaVersion",
+            "schema_version",
+            default=CURRENT_SCHEMA_VERSION,
+        )
+        if isinstance(version, bool) or not isinstance(version, int):
+            raise FriendLibraryInputError(
+                "schemaVersion muss eine ganze Zahl sein."
+            )
+        if version > CURRENT_SCHEMA_VERSION:
+            raise FriendLibraryInputError(
+                f"Die Datenbankversion {version} ist neuer als diese "
+                f"Codex-Anbindung unterstützt ({CURRENT_SCHEMA_VERSION}). "
+                "Die Datei wurde nicht verändert."
+            )
+        return version
+
+    @staticmethod
+    def _encoded_payload(payload: Mapping[str, Any]) -> bytes:
+        return (
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+
+    @staticmethod
+    def _atomic_write(path: Path, contents: bytes) -> None:
+        temporary_fd, temporary_name = tempfile.mkstemp(
+            prefix=".friends-",
+            suffix=".tmp",
+            dir=path.parent,
+        )
+        try:
+            with os.fdopen(temporary_fd, "wb") as handle:
+                handle.write(contents)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_name, path)
+        except Exception:
+            try:
+                os.unlink(temporary_name)
+            except FileNotFoundError:
+                pass
+            raise
+
     def _write_payload(self, mutation: Any) -> Any:
-        """Apply one locked mutation and atomically replace ``friends.json``."""
+        """Apply one locked mutation and rotate recoverable database copies."""
 
         lock_path = self.data_path.with_name(self.data_path.name + ".lock")
+        previous_path = self.data_path.with_name("friends.previous.json")
+        backup_path = self.data_path.with_name("friends.backup.json")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+", encoding="utf-8") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            latest = FriendLibrary.from_path(self.data_path)
-            payload = dict(latest._payload)
-            result = mutation(payload, latest)
-            payload["schemaVersion"] = payload.get("schemaVersion", 1)
-            payload["lastUpdated"] = self._timestamp()
-
-            temporary_fd, temporary_name = tempfile.mkstemp(
-                prefix=".friends-", suffix=".tmp", dir=self.data_path.parent
-            )
             try:
-                with os.fdopen(temporary_fd, "w", encoding="utf-8") as handle:
-                    json.dump(
-                        payload,
-                        handle,
-                        ensure_ascii=False,
-                        indent=2,
-                        sort_keys=True,
-                    )
-                    handle.write("\n")
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.replace(temporary_name, self.data_path)
-            except Exception:
+                latest = FriendLibrary.from_path(self.data_path)
+                schema_version = self._writable_schema_version(latest._payload)
+                current_contents = self.data_path.read_bytes()
+                payload = dict(latest._payload)
+                result = mutation(payload, latest)
+                payload["schemaVersion"] = schema_version
+                payload["lastUpdated"] = self._timestamp()
+                encoded = self._encoded_payload(payload)
+
+                previous_backup = (
+                    backup_path.read_bytes() if backup_path.is_file() else None
+                )
+                self._atomic_write(previous_path, current_contents)
+                self._atomic_write(backup_path, encoded)
                 try:
-                    os.unlink(temporary_name)
-                except FileNotFoundError:
-                    pass
-                raise
+                    self._atomic_write(self.data_path, encoded)
+                except Exception:
+                    if previous_backup is not None:
+                        try:
+                            self._atomic_write(backup_path, previous_backup)
+                        except OSError:
+                            pass
+                    else:
+                        try:
+                            backup_path.unlink()
+                        except OSError:
+                            pass
+                    raise
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
@@ -490,17 +551,29 @@ class FriendLibrary:
                     raise FriendLibraryInputError(
                         "profileDetails muss ein Objekt mit Listen von Zeichenketten sein."
                     )
-                validated_details: dict[str, list[str]] = {}
+                stored_details = _first(
+                    raw_person, "profileDetails", "profile_details", default={}
+                )
+                if not isinstance(stored_details, Mapping):
+                    raise FriendLibraryInputError(
+                        "Die gespeicherten profileDetails müssen ein Objekt sein."
+                    )
+                merged_details = dict(stored_details)
                 for raw_key, raw_values in raw_details.items():
                     if not isinstance(raw_key, str) or not raw_key.strip():
                         raise FriendLibraryInputError(
                             "Jeder Schlüssel in profileDetails muss eine "
                             "nicht leere Zeichenkette sein."
                         )
-                    validated_details[raw_key.strip()] = self._validated_strings(
+                    key = raw_key.strip()
+                    validated_values = self._validated_strings(
                         raw_values, f"profileDetails.{raw_key}"
                     )
-                raw_person["profileDetails"] = validated_details
+                    if validated_values:
+                        merged_details[key] = validated_values
+                    else:
+                        merged_details.pop(key, None)
+                raw_person["profileDetails"] = merged_details
             for field in ("summary",):
                 if field in values:
                     value = values[field]
@@ -614,18 +687,25 @@ class FriendLibrary:
                     else {
                         "id": str(uuid.uuid4()),
                         "createdAt": self._timestamp(),
+                        "kind": "website",
+                        "platform": "website",
+                        "title": "",
+                        "handle": "",
+                        "confirmed": False,
                     }
                 )
-                stored.update(
-                    {
-                        "kind": "website" if platform == "website" else "socialMedia",
-                        "platform": platform,
-                        "title": _string(values.get("title")).strip(),
-                        "url": url,
-                        "handle": _string(values.get("handle")).strip(),
-                        "confirmed": values.get("confirmed", False),
-                    }
-                )
+                stored["url"] = url
+                if creating or "platform" in values:
+                    stored["kind"] = (
+                        "website" if platform == "website" else "socialMedia"
+                    )
+                    stored["platform"] = platform
+                if "title" in values:
+                    stored["title"] = _string(values["title"]).strip()
+                if "handle" in values:
+                    stored["handle"] = _string(values["handle"]).strip()
+                if "confirmed" in values:
+                    stored["confirmed"] = values["confirmed"]
                 if creating:
                     links.append(stored)
                 else:
@@ -745,24 +825,34 @@ class FriendLibrary:
                 claim = (
                     dict(claims[claim_index])
                     if claim_index is not None
-                    else {"id": str(uuid.uuid4()), "createdAt": self._timestamp()}
+                    else {
+                        "id": str(uuid.uuid4()),
+                        "createdAt": self._timestamp(),
+                        "status": "claimed",
+                        "source": "manual",
+                        "notes": "",
+                    }
                 )
                 claim.update(
                     {
                         "fromPersonID": from_id,
                         "toPersonID": to_id,
                         "kind": kind,
-                        "status": status,
-                        "source": source,
-                        "notes": notes,
                     }
                 )
+                if "status" in values:
+                    claim["status"] = status
+                if "source" in values:
+                    claim["source"] = source
+                if "notes" in values:
+                    claim["notes"] = notes
                 if kind == "family":
-                    claim["familyRole"] = (
-                        inverse_family_roles.get(family_role, family_role)
-                        if pair_index == 1
-                        else family_role
-                    )
+                    if creating or "familyRole" in values:
+                        claim["familyRole"] = (
+                            inverse_family_roles.get(family_role, family_role)
+                            if pair_index == 1
+                            else family_role
+                        )
                 else:
                     claim.pop("familyRole", None)
                 if creating:
@@ -836,13 +926,16 @@ class FriendLibrary:
             payload: dict[str, Any], latest: "FriendLibrary"
         ) -> tuple[str, str]:
             selected = latest.find_person(_required_string(values, "person"))
-            missing_media = sorted(
-                set(evidence_ids) - {item["id"] for item in latest.media}
-            )
-            if missing_media:
-                raise FriendLibraryNotFoundError(
-                    "Unbekannte evidenceMediaIDs: " + ", ".join(missing_media) + "."
+            if "evidenceMediaIDs" in values:
+                missing_media = sorted(
+                    set(evidence_ids) - {item["id"] for item in latest.media}
                 )
+                if missing_media:
+                    raise FriendLibraryNotFoundError(
+                        "Unbekannte evidenceMediaIDs: "
+                        + ", ".join(missing_media)
+                        + "."
+                    )
             observations = self._standard_collection(payload, "observations")
             observation_id = values.get("observationID")
             matches = [
@@ -861,19 +954,30 @@ class FriendLibrary:
             observation = (
                 dict(observations[observation_index])
                 if observation_index is not None
-                else {"id": str(uuid.uuid4()), "createdAt": self._timestamp()}
+                else {
+                    "id": str(uuid.uuid4()),
+                    "createdAt": self._timestamp(),
+                    "status": "unverified",
+                    "confidence": 0.5,
+                    "source": "manual",
+                    "evidenceMediaIDs": [],
+                }
             )
             observation.update(
                 {
                     "personID": selected["id"],
                     "category": category,
                     "value": value,
-                    "status": status,
-                    "confidence": float(confidence),
-                    "source": source,
-                    "evidenceMediaIDs": evidence_ids,
                 }
             )
+            if "status" in values:
+                observation["status"] = status
+            if "confidence" in values:
+                observation["confidence"] = float(confidence)
+            if "source" in values:
+                observation["source"] = source
+            if "evidenceMediaIDs" in values:
+                observation["evidenceMediaIDs"] = evidence_ids
             if creating:
                 observations.append(observation)
             else:
@@ -1554,11 +1658,16 @@ class FriendLibrary:
         focus_id = focus["id"] if focus else None
 
         persisted = [self._decorate_group(group) for group in self.groups]
-        # Inference is deliberately only a fallback. Persisted and suggested
-        # groups are therefore never silently mixed.
+        persisted_member_sets = {
+            frozenset(group["memberIDs"]) for group in persisted
+        }
         inferred = (
-            self._inferred_groups(min_members)
-            if include_inferred and not persisted
+            [
+                group
+                for group in self._inferred_groups(min_members)
+                if frozenset(group["memberIDs"]) not in persisted_member_sets
+            ]
+            if include_inferred
             else []
         )
         if focus_id:
@@ -1575,8 +1684,8 @@ class FriendLibrary:
                 "inferred": len(inferred),
             },
             "inferencePolicy": (
-                "Inferred groups are suggestions generated only when no "
-                "persisted groups exist."
+                "Inferred groups are always generated as suggestions; an "
+                "identical persisted member set suppresses the duplicate."
             ),
             "metadata": self.metadata,
         }

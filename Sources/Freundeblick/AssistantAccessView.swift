@@ -54,7 +54,7 @@ struct AssistantAccessView: View {
                 SectionTitle(title: "Frag Freundeblick", subtitle: "Kurze Antwort, visuelle Details")
             }
             Spacer()
-            StatusPill(text: "Lesen & Schreiben", systemImage: "pencil.and.list.clipboard", tint: AppTheme.plum)
+            StatusPill(text: "Lesen & Schreiben", systemImage: "pencil.and.list.clipboard", tint: AppTheme.plumText)
         }
     }
 
@@ -62,7 +62,7 @@ struct AssistantAccessView: View {
         HStack(spacing: 12) {
             Image(systemName: "sparkle.magnifyingglass")
                 .font(.title2)
-                .foregroundStyle(AppTheme.berry)
+                .foregroundStyle(AppTheme.berryText)
             TextField("z. B. Mit wem ist Leni befreundet?", text: $question)
                 .textFieldStyle(.plain)
                 .font(.title3)
@@ -108,7 +108,7 @@ struct AssistantAccessView: View {
             HStack {
                 Image(systemName: "bolt.horizontal.circle.fill")
                     .font(.title2)
-                    .foregroundStyle(AppTheme.plum)
+                    .foregroundStyle(AppTheme.plumText)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Codex-Verbindung vorbereitet")
                         .font(.headline)
@@ -117,7 +117,7 @@ struct AssistantAccessView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                StatusPill(text: "lokal", systemImage: "desktopcomputer", tint: AppTheme.plum)
+                StatusPill(text: "lokal", systemImage: "desktopcomputer", tint: AppTheme.plumText)
             }
 
             Divider()
@@ -308,7 +308,7 @@ private struct QueryAnswerItemCard: View {
         HStack(spacing: 11) {
             Image(systemName: item.symbolName)
                 .font(.title3)
-                .foregroundStyle(AppTheme.berry)
+                .foregroundStyle(AppTheme.berryText)
                 .frame(width: 38, height: 38)
                 .background(
                     AppTheme.berry.opacity(0.1),

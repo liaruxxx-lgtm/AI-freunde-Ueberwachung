@@ -30,6 +30,7 @@ struct PeopleView: View {
     @Binding var selectedPersonID: UUID?
 
     @State private var searchText = ""
+    @AppStorage("peopleListVisible") private var peopleListVisible = true
 
     var body: some View {
         SwiftUI.Group {
@@ -65,14 +66,6 @@ struct PeopleView: View {
                 searchText = ""
             }
         }
-        .onChange(of: filteredPersonIDs) { _, availableIDs in
-            selectedPersonID = PeopleSelection.reconciled(
-                current: selectedPersonID,
-                previousIDs: availableIDs,
-                availableIDs: availableIDs,
-                preferNew: false
-            )
-        }
     }
 
     private var emptyLibrary: some View {
@@ -97,60 +90,158 @@ struct PeopleView: View {
 
     private var peopleBrowser: some View {
         HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                peopleHeader
-                inlineSearch
+            if peopleListVisible {
+                VStack(spacing: 0) {
+                    peopleHeader
+                    inlineSearch
 
-                List(selection: $selectedPersonID) {
-                    ForEach(filteredPeople) { person in
-                        PersonListRow(person: person)
-                            .tag(person.id)
-                            .listRowBackground(
-                                person.id == selectedPersonID
-                                    ? AppTheme.berry.opacity(0.18)
-                                    : Color.white.opacity(0.12)
-                            )
+                    ScrollView {
+                        LazyVStack(spacing: 9) {
+                            ForEach(filteredPeople) { person in
+                                let isSelected = person.id == selectedPersonID
+                                Button {
+                                    withAnimation(.easeOut(duration: 0.18)) {
+                                        selectedPersonID = person.id
+                                    }
+                                } label: {
+                                    PersonListRow(
+                                        person: person,
+                                        isSelected: isSelected
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityAddTraits(
+                                    isSelected ? .isSelected : []
+                                )
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                    }
+                    .overlay {
+                        if filteredPeople.isEmpty {
+                            VStack(spacing: 8) {
+                                Image(systemName: "person.crop.circle.badge.questionmark")
+                                    .font(.title2)
+                                    .foregroundStyle(AppTheme.berryText)
+                                Text("Keine Treffer")
+                                    .font(.callout.weight(.semibold))
+                                Text("Versuche einen anderen Namen oder Ort.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .padding(20)
+                        }
                     }
                 }
-                .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
-            }
-            .frame(width: 250)
-            .background {
-                LinearGradient(
-                    colors: [
-                        AppTheme.plum.opacity(0.12),
-                        AppTheme.berry.opacity(0.08),
-                        AppTheme.apricot.opacity(0.13),
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
+                .frame(width: 292)
+                .background {
+                    LinearGradient(
+                        colors: [
+                            AppTheme.plum.opacity(0.10),
+                            AppTheme.berry.opacity(0.06),
+                            AppTheme.apricot.opacity(0.10),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                }
+
+                Divider()
             }
 
-            Divider()
+            VStack(spacing: 0) {
+                HStack {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            peopleListVisible.toggle()
+                        }
+                    } label: {
+                        Label(
+                            peopleListVisible ? "Personenliste ausblenden" : "Personenliste einblenden",
+                            systemImage: "sidebar.left"
+                        )
+                    }
+                    .buttonStyle(.borderless)
+                    .help(
+                        peopleListVisible
+                            ? "Mehr Platz für das Profil"
+                            : "Personenliste anzeigen"
+                    )
 
-            personDetail
-                .frame(minWidth: 430, maxWidth: .infinity, maxHeight: .infinity)
+                    if !peopleListVisible {
+                        Text(selectedPerson?.name ?? "Personen")
+                            .font(.headline)
+                    }
+
+                    Spacer()
+
+                    if !peopleListVisible {
+                        Button {
+                            store.presentNewPersonSheet = true
+                        } label: {
+                            Label("Person hinzufügen", systemImage: "person.badge.plus")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .frame(height: 42)
+                .background(.thinMaterial)
+
+                Divider()
+
+                personDetail
+                    .frame(
+                        minWidth: 430,
+                        maxWidth: .infinity,
+                        maxHeight: .infinity
+                    )
+            }
         }
     }
 
     private var peopleHeader: some View {
-        HStack {
-            Label("Personen", systemImage: "person.2.fill")
-                .font(.title3.weight(.bold))
-                .foregroundStyle(AppTheme.plum)
+        HStack(spacing: 11) {
+            Image(systemName: "person.2.fill")
+                .font(.callout.weight(.bold))
+                .foregroundStyle(AppTheme.plumText)
+                .frame(width: 34, height: 34)
+                .background(
+                    AppTheme.plum.opacity(0.13),
+                    in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+                )
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Personen")
+                    .font(.headline.weight(.bold))
+                Text("\(store.data.people.count) Profile")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
             Spacer()
+
             Button {
                 store.presentNewPersonSheet = true
             } label: {
                 Label("Person hinzufügen", systemImage: "plus")
                     .labelStyle(.iconOnly)
+                    .font(.callout.weight(.bold))
+                    .frame(width: 32, height: 32)
+                    .background(
+                        AppTheme.berry.opacity(0.13),
+                        in: Circle()
+                    )
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
+            .foregroundStyle(AppTheme.berryText)
             .help("Person hinzufügen")
         }
-        .padding(16)
+        .padding(.horizontal, 14)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
     }
 
     private var inlineSearch: some View {
@@ -159,6 +250,7 @@ struct PeopleView: View {
                 .foregroundStyle(.secondary)
             TextField("Name oder Ort", text: $searchText)
                 .textFieldStyle(.plain)
+                .foregroundStyle(.primary)
             if !searchText.isEmpty {
                 Button {
                     searchText = ""
@@ -170,15 +262,18 @@ struct PeopleView: View {
                 .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
+        .background(
+            Color.primary.opacity(0.07),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
         .overlay {
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(AppTheme.berry.opacity(0.16), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.primary.opacity(0.09), lineWidth: 1)
         }
-        .padding(.horizontal, 12)
-        .padding(.bottom, 10)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 8)
     }
 
     @ViewBuilder
@@ -219,10 +314,6 @@ struct PeopleView: View {
             .map(\.id)
     }
 
-    private var filteredPersonIDs: [UUID] {
-        filteredPeople.map(\.id)
-    }
-
     private var filteredPeople: [Person] {
         store.data.people
             .filter { person in
@@ -240,9 +331,11 @@ struct PeopleView: View {
 }
 
 private struct PeopleTabBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         ZStack {
-            Color(nsColor: .windowBackgroundColor)
+            AppTheme.canvas(for: colorScheme)
 
             LinearGradient(
                 colors: [
@@ -279,7 +372,12 @@ private struct PeopleTabBackground: View {
 
 private struct PersonListRow: View {
     @EnvironmentObject private var store: LibraryStore
+    @Environment(\.colorScheme) private var colorScheme
+
     let person: Person
+    let isSelected: Bool
+
+    @State private var isHovered = false
 
     private var avatar: MediaItem? {
         guard let avatarID = person.avatarMediaID else { return nil }
@@ -287,19 +385,120 @@ private struct PersonListRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 11) {
-            LocalMediaView(media: avatar, cornerRadius: 22)
-                .frame(width: 44, height: 44)
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 12) {
+            LocalMediaView(media: avatar, cornerRadius: 24)
+                .frame(width: 48, height: 48)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(
+                            isSelected
+                                ? AppTheme.apricot.opacity(0.92)
+                                : Color.primary.opacity(0.12),
+                            lineWidth: isSelected ? 2 : 1
+                        )
+                }
+                .shadow(
+                    color: isSelected
+                        ? AppTheme.berry.opacity(0.24)
+                        : Color.black.opacity(0.08),
+                    radius: isSelected ? 7 : 3,
+                    y: 2
+                )
+
+            VStack(alignment: .leading, spacing: 3) {
                 Text(person.name)
-                    .font(.callout.weight(.semibold))
-                Text([ageText(person.birthday), person.location].compactMap { $0 }.joined(separator: " · "))
+                    .font(.callout.weight(isSelected ? .bold : .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+
+            Spacer(minLength: 4)
+
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "chevron.right")
+                .font(isSelected ? .callout.weight(.bold) : .caption.weight(.semibold))
+                .foregroundStyle(
+                    isSelected
+                        ? AppTheme.berryText
+                        : Color.secondary.opacity(isHovered ? 0.9 : 0.48)
+                )
         }
-        .padding(.vertical, 3)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .fill(rowBackground)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .stroke(
+                    isSelected
+                        ? AppTheme.berry.opacity(colorScheme == .dark ? 0.76 : 0.52)
+                        : Color.primary.opacity(isHovered ? 0.14 : 0.07),
+                    lineWidth: isSelected ? 1.5 : 1
+                )
+        }
+        .overlay(alignment: .leading) {
+            if isSelected {
+                Capsule()
+                    .fill(AppTheme.heroGradient)
+                    .frame(width: 4)
+                    .padding(.vertical, 11)
+                    .offset(x: 1)
+            }
+        }
+        .shadow(
+            color: isSelected
+                ? AppTheme.plum.opacity(colorScheme == .dark ? 0.30 : 0.14)
+                : Color.clear,
+            radius: 10,
+            y: 4
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.14)) {
+                isHovered = hovering
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: isSelected)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(person.name), \(subtitle)")
+        .accessibilityValue(isSelected ? "Ausgewählt" : "")
+    }
+
+    private var subtitle: String {
+        [ageText(person.birthday), person.location]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+    }
+
+    private var rowBackground: AnyShapeStyle {
+        if isSelected {
+            return AnyShapeStyle(
+                LinearGradient(
+                    colors: [
+                        AppTheme.berry.opacity(colorScheme == .dark ? 0.30 : 0.15),
+                        AppTheme.plum.opacity(colorScheme == .dark ? 0.25 : 0.11),
+                        AppTheme.coral.opacity(colorScheme == .dark ? 0.14 : 0.08),
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+        }
+
+        return AnyShapeStyle(
+            Color.primary.opacity(
+                isHovered
+                    ? (colorScheme == .dark ? 0.10 : 0.07)
+                    : (colorScheme == .dark ? 0.055 : 0.035)
+            )
+        )
     }
 }
 
@@ -312,6 +511,7 @@ private struct PersonDetailView: View {
     @State private var showingAvatarPicker = false
     @State private var showingWebResearch = false
     @State private var importError: String?
+    @State private var showingDeleteConfirmation = false
 
     private var avatar: MediaItem? {
         guard let id = person.avatarMediaID else { return nil }
@@ -380,13 +580,28 @@ private struct PersonDetailView: View {
             WebResearchView(person: person)
                 .environmentObject(store)
         }
-        .alert("Import nicht möglich", isPresented: Binding(
+        .alert("Aktion nicht möglich", isPresented: Binding(
             get: { importError != nil },
             set: { if !$0 { importError = nil } }
         )) {
             Button("OK", role: .cancel) { importError = nil }
         } message: {
             Text(importError ?? "")
+        }
+        .confirmationDialog(
+            "\(person.name) löschen?",
+            isPresented: $showingDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Person endgültig löschen", role: .destructive) {
+                deletePerson()
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text(
+                "Das Profil, seine Beziehungen und Beobachtungen werden entfernt. "
+                    + "Zugeordnete Mediendateien bleiben in der lokalen Bibliothek."
+            )
         }
     }
 
@@ -422,7 +637,7 @@ private struct PersonDetailView: View {
                 .overlay(alignment: .bottomTrailing) {
                     Image(systemName: "camera.fill")
                         .font(.caption.weight(.bold))
-                        .foregroundStyle(AppTheme.plum)
+                        .foregroundStyle(AppTheme.plumText)
                         .frame(width: 30, height: 30)
                         .background(.white, in: Circle())
                         .shadow(color: .black.opacity(0.16), radius: 5, y: 2)
@@ -479,6 +694,7 @@ private struct PersonDetailView: View {
                         showingAvatarPicker = true
                     }
                     Button("Erinnerung hinzufügen", action: importMedia)
+                    deleteMenu
                 }
 
                 VStack(alignment: .leading) {
@@ -489,6 +705,7 @@ private struct PersonDetailView: View {
                         showingAvatarPicker = true
                     }
                     Button("Erinnerung hinzufügen", action: importMedia)
+                    deleteMenu
                 }
             }
             .buttonStyle(.bordered)
@@ -496,8 +713,27 @@ private struct PersonDetailView: View {
         }
     }
 
+    private var deleteMenu: some View {
+        Menu {
+            Button("Person löschen", role: .destructive) {
+                showingDeleteConfirmation = true
+            }
+        } label: {
+            Label("Mehr", systemImage: "ellipsis")
+        }
+    }
+
+    private func deletePerson() {
+        do {
+            try store.deletePerson(id: person.id)
+            selectedPersonID = nil
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
+
     private var quickFacts: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12)], spacing: 12) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 12)], spacing: 12) {
             ProfileFactCard(
                 label: "Geburtstag",
                 value: person.birthday.map { $0.formatted(date: .long, time: .omitted) } ?? "noch offen",
@@ -541,12 +777,12 @@ private struct PersonDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Vom Gemüt", systemImage: "heart.text.square.fill")
                 .font(.headline)
-                .foregroundStyle(AppTheme.plum)
+                .foregroundStyle(AppTheme.plumText)
 
             if !person.temperamentTags.isEmpty {
                 FlowLayout(spacing: 8) {
                     ForEach(person.temperamentTags, id: \.self) { tag in
-                        StatusPill(text: tag, systemImage: "person.fill", tint: AppTheme.plum)
+                        StatusPill(text: tag, systemImage: "person.fill", tint: AppTheme.plumText)
                     }
                 }
             }
@@ -563,7 +799,7 @@ private struct PersonDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Interessen", systemImage: "star.fill")
                 .font(.headline)
-                .foregroundStyle(AppTheme.coral)
+                .foregroundStyle(AppTheme.coralText)
             if person.interests.isEmpty {
                 Text("Noch keine Interessen gespeichert")
                     .font(.callout)
@@ -571,7 +807,7 @@ private struct PersonDetailView: View {
             } else {
                 FlowLayout(spacing: 8) {
                     ForEach(person.interests, id: \.self) { interest in
-                        StatusPill(text: interest, systemImage: "sparkles", tint: AppTheme.coral)
+                        StatusPill(text: interest, systemImage: "sparkles", tint: AppTheme.coralText)
                     }
                 }
             }
@@ -597,7 +833,7 @@ private struct PersonDetailView: View {
             HStack {
                 Label("Steckbrief", systemImage: "list.bullet.clipboard.fill")
                     .font(.headline)
-                    .foregroundStyle(AppTheme.berry)
+                    .foregroundStyle(AppTheme.berryText)
                 Spacer()
                 Text("\(savedProfileDetails.count) Angaben")
                     .font(.caption)
@@ -643,7 +879,7 @@ private struct PersonDetailView: View {
                 HStack(spacing: 12) {
                     Image(systemName: "link.circle.fill")
                         .font(.title2)
-                        .foregroundStyle(AppTheme.berry)
+                        .foregroundStyle(AppTheme.berryText)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Noch keine Links gespeichert")
                             .font(.callout.weight(.semibold))
@@ -756,7 +992,7 @@ private struct PersonDetailView: View {
                 people: connectedPeople,
                 emptyMessage: "Noch keine gegenseitige Freundschaft gespeichert.",
                 systemImage: "person.2.fill",
-                tint: AppTheme.berry,
+                tint: AppTheme.berryText,
                 showsFamilyRole: false
             )
         }
@@ -837,7 +1073,7 @@ private struct PersonDetailView: View {
                 ForEach(style) { observation in
                     HStack {
                         Image(systemName: "tshirt.fill")
-                            .foregroundStyle(AppTheme.coral)
+                            .foregroundStyle(AppTheme.coralText)
                         Text(observation.value)
                             .font(.callout.weight(.semibold))
                         Spacer()
@@ -911,6 +1147,8 @@ private struct ProfileImageCropCandidate: Identifiable {
     let id = UUID()
     let image: NSImage
     let sourceFilename: String
+    let source: ProfileImageImportSource
+    let capturedAt: Date?
 }
 
 private struct ProfileImagePickerView: View {
@@ -921,6 +1159,9 @@ private struct ProfileImagePickerView: View {
 
     @State private var errorMessage: String?
     @State private var cropCandidate: ProfileImageCropCandidate?
+    @State private var cameraKind: ProfileCameraKind?
+    @State private var pendingCameraCropCandidate: ProfileImageCropCandidate?
+    @State private var chooseFileAfterCamera = false
     @State private var closeAfterCrop = false
 
     private var person: Person? {
@@ -947,10 +1188,25 @@ private struct ProfileImagePickerView: View {
                 }
                 Spacer()
                 Button("Abbrechen") { dismiss() }
-                Button {
-                    importProfileImage()
+                Menu {
+                    Button {
+                        importProfileImage()
+                    } label: {
+                        Label("Bilddatei auswählen …", systemImage: "photo")
+                    }
+                    Divider()
+                    Button {
+                        cameraKind = .mac
+                    } label: {
+                        Label("Mac-Kamera", systemImage: "laptopcomputer")
+                    }
+                    Button {
+                        cameraKind = .iPhone
+                    } label: {
+                        Label("iPhone-Kamera", systemImage: "iphone")
+                    }
                 } label: {
-                    Label("Neues Bild auswählen", systemImage: "photo.badge.plus")
+                    Label("Neues Profilbild", systemImage: "photo.badge.plus")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(AppTheme.berry)
@@ -964,17 +1220,33 @@ private struct ProfileImagePickerView: View {
                 VStack(spacing: 14) {
                     Image(systemName: "person.crop.square.fill")
                         .font(.system(size: 58))
-                        .foregroundStyle(AppTheme.berry)
+                        .foregroundStyle(AppTheme.berryText)
                     Text("Noch kein Bild vorhanden")
                         .font(.headline)
-                    Text("Wähle ein Bild von deinem Mac. Danach kannst du den Profil-Ausschnitt verschieben und vergrößern.")
+                    Text("Wähle eine Datei oder nimm ein Foto mit der Mac- oder iPhone-Kamera auf. Danach kannst du den Ausschnitt verschieben und vergrößern.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
-                        .frame(maxWidth: 390)
-                    Button("Bild auswählen", action: importProfileImage)
-                        .buttonStyle(.borderedProminent)
-                        .tint(AppTheme.berry)
+                        .frame(maxWidth: 470)
+                    HStack(spacing: 10) {
+                        sourceButton(
+                            title: "Datei",
+                            symbol: "photo",
+                            action: importProfileImage
+                        )
+                        sourceButton(
+                            title: "Mac-Kamera",
+                            symbol: "laptopcomputer"
+                        ) {
+                            cameraKind = .mac
+                        }
+                        sourceButton(
+                            title: "iPhone-Kamera",
+                            symbol: "iphone"
+                        ) {
+                            cameraKind = .iPhone
+                        }
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(30)
@@ -1026,7 +1298,7 @@ private struct ProfileImagePickerView: View {
                                 .background(
                                     selectedAvatarID == item.id
                                         ? AppTheme.berry.opacity(0.1)
-                                        : Color.white.opacity(0.62),
+                                        : Color.primary.opacity(0.07),
                                     in: RoundedRectangle(cornerRadius: 22)
                                 )
                                 .overlay {
@@ -1049,7 +1321,7 @@ private struct ProfileImagePickerView: View {
                 if selectedAvatarID != nil {
                     Divider()
                     HStack {
-                        Text("Das ursprüngliche Bild bleibt unverändert bei den Erinnerungen gespeichert.")
+                        Text("Vorhandene Erinnerungsbilder bleiben unverändert. Bei Datei oder Kamera wird nur der neue Zuschnitt gespeichert.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -1075,9 +1347,39 @@ private struct ProfileImagePickerView: View {
                 try store.importCroppedProfileImage(
                     pngData: pngData,
                     originalFilename: candidate.sourceFilename,
-                    for: personID
+                    for: personID,
+                    source: candidate.source,
+                    capturedAt: candidate.capturedAt
                 )
                 closeAfterCrop = true
+            }
+        }
+        .sheet(item: $cameraKind, onDismiss: {
+            if let pendingCameraCropCandidate {
+                self.pendingCameraCropCandidate = nil
+                cropCandidate = pendingCameraCropCandidate
+            } else if chooseFileAfterCamera {
+                chooseFileAfterCamera = false
+                DispatchQueue.main.async {
+                    importProfileImage()
+                }
+            }
+        }) { kind in
+            ProfileCameraCaptureView(
+                initialKind: kind,
+                onChooseFile: {
+                    chooseFileAfterCamera = true
+                }
+            ) {
+                data,
+                capturedAt,
+                sourceFilename in
+                pendingCameraCropCandidate = try makeCropCandidate(
+                    from: data,
+                    sourceFilename: sourceFilename,
+                    source: .camera,
+                    capturedAt: capturedAt
+                )
             }
         }
         .alert("Profilbild konnte nicht geändert werden", isPresented: Binding(
@@ -1109,7 +1411,8 @@ private struct ProfileImagePickerView: View {
         do {
             try prepareCrop(
                 from: sourceURL,
-                sourceFilename: sourceURL.lastPathComponent
+                sourceFilename: sourceURL.lastPathComponent,
+                source: .file
             )
         } catch {
             errorMessage = error.localizedDescription
@@ -1120,7 +1423,9 @@ private struct ProfileImagePickerView: View {
         do {
             try prepareCrop(
                 from: store.mediaURL(for: item),
-                sourceFilename: item.originalFilename
+                sourceFilename: item.originalFilename,
+                source: .existingMedia,
+                capturedAt: item.capturedAt
             )
         } catch {
             errorMessage = error.localizedDescription
@@ -1129,19 +1434,51 @@ private struct ProfileImagePickerView: View {
 
     private func prepareCrop(
         from sourceURL: URL,
-        sourceFilename: String
+        sourceFilename: String,
+        source: ProfileImageImportSource,
+        capturedAt: Date? = nil
     ) throws {
-        let imageData = try Data(contentsOf: sourceURL)
-        guard let image = NSImage(data: imageData),
-              image.size.width > 0,
-              image.size.height > 0
-        else {
-            throw ProfileImageCropError.unreadableImage
-        }
-        cropCandidate = ProfileImageCropCandidate(
-            image: image,
-            sourceFilename: sourceFilename
+        let values = try sourceURL.resourceValues(
+            forKeys: [.fileSizeKey]
         )
+        if let fileSize = values.fileSize,
+           fileSize > ProfileImageSourceDecoder.maximumInputBytes {
+            throw ProfileImageCropError.imageTooLarge
+        }
+        let imageData = try Data(contentsOf: sourceURL)
+        cropCandidate = try makeCropCandidate(
+            from: imageData,
+            sourceFilename: sourceFilename,
+            source: source,
+            capturedAt: capturedAt
+        )
+    }
+
+    private func makeCropCandidate(
+        from imageData: Data,
+        sourceFilename: String,
+        source: ProfileImageImportSource,
+        capturedAt: Date? = nil
+    ) throws -> ProfileImageCropCandidate {
+        ProfileImageCropCandidate(
+            image: try ProfileImageSourceDecoder.image(from: imageData),
+            sourceFilename: sourceFilename,
+            source: source,
+            capturedAt: capturedAt
+        )
+    }
+
+    private func sourceButton(
+        title: String,
+        symbol: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .frame(minWidth: 120)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.large)
     }
 
     private func removeProfileImage() {
@@ -1222,7 +1559,7 @@ private struct ProfileFactCard: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: systemImage)
-                .foregroundStyle(AppTheme.berry)
+                .foregroundStyle(AppTheme.berryText)
                 .frame(width: 36, height: 36)
                 .background(AppTheme.berry.opacity(0.1), in: RoundedRectangle(cornerRadius: 11))
             VStack(alignment: .leading, spacing: 1) {
@@ -1248,7 +1585,7 @@ private struct ProfileDetailValueCard: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: systemImage)
-                .foregroundStyle(AppTheme.berry)
+                .foregroundStyle(AppTheme.berryText)
                 .frame(width: 30, height: 30)
                 .background(
                     AppTheme.berry.opacity(0.1),
@@ -1331,6 +1668,7 @@ struct PersonEditorView: View {
     @State private var links: [ProfileLink]
     @State private var selectedPage: PersonEditorPage = .basics
     @State private var showingRelationshipEditor = false
+    @State private var showingDiscardConfirmation = false
     @State private var errorMessage: String?
 
     init(
@@ -1357,16 +1695,37 @@ struct PersonEditorView: View {
                 Text(existingPerson == nil ? "Neue Person" : "Profil bearbeiten")
                     .font(.title2.weight(.bold))
                 Spacer()
-                Button("Abbrechen") { dismiss() }
+                Button("Abbrechen", action: cancel)
+                    .keyboardShortcut(.cancelAction)
                 Button("Speichern", action: save)
                     .buttonStyle(.borderedProminent)
                     .tint(AppTheme.berry)
+                    .keyboardShortcut(.defaultAction)
                     .disabled(
                         name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                             || hasInvalidLink
                     )
             }
             .padding(20)
+
+            if let validationMessage {
+                HStack(spacing: 10) {
+                    Label(
+                        validationMessage.text,
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(AppTheme.coralText)
+                    Spacer()
+                    Button("Fehler anzeigen") {
+                        selectedPage = validationMessage.page
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .background(AppTheme.coral.opacity(0.10))
+            }
 
             Divider()
 
@@ -1404,6 +1763,21 @@ struct PersonEditorView: View {
         } message: {
             Text(errorMessage ?? "")
         }
+        .confirmationDialog(
+            "Ungespeicherte Änderungen verwerfen?",
+            isPresented: $showingDiscardConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Änderungen verwerfen", role: .destructive) {
+                dismiss()
+            }
+            Button("Weiter bearbeiten", role: .cancel) {}
+        } message: {
+            Text(
+                "Deine Änderungen am Steckbrief wurden noch nicht gespeichert."
+            )
+        }
+        .interactiveDismissDisabled(hasUnsavedChanges)
     }
 
     private var editorNavigation: some View {
@@ -1439,7 +1813,7 @@ struct PersonEditorView: View {
                                 .font(.caption2)
                                 .foregroundStyle(
                                     selectedPage == page
-                                        ? Color.white.opacity(0.78)
+                                        ? Color.white
                                         : Color.secondary
                                 )
                                 .lineLimit(1)
@@ -1493,7 +1867,7 @@ struct PersonEditorView: View {
                     title: "Spitznamen",
                     placeholder: "Spitzname eingeben",
                     suggestions: store.data.people.flatMap(\.aliases),
-                    tint: AppTheme.berry,
+                    tint: AppTheme.berryText,
                     values: $aliases
                 )
                 LocationAutocompleteField(location: $location)
@@ -1502,6 +1876,7 @@ struct PersonEditorView: View {
                     DatePicker(
                         "Geburtstag",
                         selection: $birthday,
+                        in: ...Date(),
                         displayedComponents: .date
                     )
                 }
@@ -1517,7 +1892,7 @@ struct PersonEditorView: View {
                         ForEach(relationshipRows) { row in
                             HStack(spacing: 12) {
                                 Image(systemName: relationshipSymbol(for: row.kind))
-                                    .foregroundStyle(AppTheme.berry)
+                                    .foregroundStyle(AppTheme.berryText)
                                     .frame(width: 26)
 
                                 VStack(alignment: .leading, spacing: 2) {
@@ -1575,7 +1950,7 @@ struct PersonEditorView: View {
                         systemImage: "person.crop.circle"
                     )
                     .font(.callout.weight(.semibold))
-                    .foregroundStyle(AppTheme.berry)
+                    .foregroundStyle(AppTheme.berryText)
 
                     TokenSuggestionField(
                         title: "Geschlecht / Geschlechtsidentität",
@@ -1584,7 +1959,7 @@ struct PersonEditorView: View {
                             + store.data.people.flatMap {
                                 $0.profileDetails["genderIdentity"] ?? []
                             },
-                        tint: AppTheme.berry,
+                        tint: AppTheme.berryText,
                         values: personalDetailBinding("genderIdentity")
                     )
                 }
@@ -1596,7 +1971,7 @@ struct PersonEditorView: View {
                         systemImage: "heart.circle"
                     )
                     .font(.callout.weight(.semibold))
-                    .foregroundStyle(AppTheme.coral)
+                    .foregroundStyle(AppTheme.coralText)
 
                     TokenSuggestionField(
                         title: "Sexuelle Orientierung",
@@ -1623,7 +1998,7 @@ struct PersonEditorView: View {
                     placeholder: "Gemüt eingeben, z. B. „ru“",
                     suggestions: ProfileSuggestionCatalog.temperament
                         + store.data.people.flatMap(\.temperamentTags),
-                    tint: AppTheme.plum,
+                    tint: AppTheme.plumText,
                     values: $temperament
                 )
                 TokenSuggestionField(
@@ -1678,7 +2053,7 @@ struct PersonEditorView: View {
                         systemImage: "exclamationmark.triangle.fill"
                     )
                     .font(.caption)
-                    .foregroundStyle(AppTheme.coral)
+                    .foregroundStyle(AppTheme.coralText)
                 } else {
                     Text("Manuell eingetragene Links sind standardmäßig bestätigt. Treffer aus einer Web-Recherche kannst du vor dem Bestätigen prüfen.")
                         .font(.caption)
@@ -1746,14 +2121,34 @@ struct PersonEditorView: View {
         do {
             if existingPerson == nil {
                 try store.addPerson(person)
-            } else {
-                try store.updatePerson(person)
+            } else if let existingPerson {
+                try store.updatePerson(person, expecting: existingPerson)
             }
             onSave(person)
             dismiss()
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func cancel() {
+        if hasUnsavedChanges {
+            showingDiscardConfirmation = true
+        } else {
+            dismiss()
+        }
+    }
+
+    private var hasUnsavedChanges: Bool {
+        name != (existingPerson?.name ?? "")
+            || aliases != (existingPerson?.aliases ?? [])
+            || (hasBirthday ? birthday : nil) != existingPerson?.birthday
+            || location != (existingPerson?.location ?? "")
+            || summary != (existingPerson?.summary ?? "")
+            || temperament != (existingPerson?.temperamentTags ?? [])
+            || interests != (existingPerson?.interests ?? [])
+            || profileDetails != (existingPerson?.profileDetails ?? [:])
+            || links != (existingPerson?.links ?? [])
     }
 
     private var hasInvalidLink: Bool {
@@ -1765,6 +2160,19 @@ struct PersonEditorView: View {
             }
             return !PublicWebResearchService.isSafePublicPageURL(url)
         }
+    }
+
+    private var validationMessage: (text: String, page: PersonEditorPage)? {
+        if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return ("Bitte gib einen Namen ein.", .basics)
+        }
+        if hasInvalidLink {
+            return (
+                "Mindestens ein öffentlicher Link ist unvollständig oder unsicher.",
+                .links
+            )
+        }
+        return nil
     }
 
     private func personalDetailBinding(_ key: String) -> Binding<[String]> {
@@ -1877,7 +2285,7 @@ private struct ProfileLinkEditorRow: View {
             HStack(alignment: .firstTextBaseline) {
                 Label(link.platform.germanLabel, systemImage: link.platform.symbolName)
                     .font(.callout.weight(.semibold))
-                    .foregroundStyle(AppTheme.plum)
+                    .foregroundStyle(AppTheme.plumText)
                 Spacer()
                 Toggle("Bestätigt", isOn: $link.confirmed)
                     .toggleStyle(.checkbox)
@@ -1920,7 +2328,7 @@ private struct ProfileLinkEditorRow: View {
                link.resolvedURL.map(PublicWebResearchService.isSafePublicPageURL) != true {
                 Label("Bitte eine öffentliche HTTPS-Adresse verwenden.", systemImage: "exclamationmark.circle")
                     .font(.caption)
-                    .foregroundStyle(AppTheme.coral)
+                    .foregroundStyle(AppTheme.coralText)
             }
         }
         .padding(.vertical, 6)
@@ -1938,6 +2346,7 @@ private struct RelationshipEditorView: View {
     @State private var familyRole: FamilyRelationshipRole = .familyMember
     @State private var mutual = true
     @State private var notes = ""
+    @State private var relationshipBaseline: [RelationshipClaim]?
     @State private var errorMessage: String?
 
     private var otherPeople: [Person] {
@@ -2001,6 +2410,11 @@ private struct RelationshipEditorView: View {
                 mutual = false
             }
         }
+        .onAppear {
+            if relationshipBaseline == nil {
+                relationshipBaseline = store.data.relationshipClaims
+            }
+        }
         .alert("Speichern nicht möglich", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -2020,23 +2434,28 @@ private struct RelationshipEditorView: View {
 
     private func save() {
         guard let otherPersonID else { return }
+        let expectedClaims = (relationshipBaseline ?? []).filter { claim in
+            let isSamePair =
+                (claim.fromPersonID == person.id
+                    && claim.toPersonID == otherPersonID)
+                || (claim.fromPersonID == otherPersonID
+                    && claim.toPersonID == person.id)
+            return isSamePair && claim.kind == kind
+        }
         do {
-            try store.addRelationshipClaim(
+            guard expectedClaims.isEmpty else {
+                throw LibraryStoreError.relationshipKindConflict
+            }
+            try store.setRelationshipPair(
                 from: person.id,
                 to: otherPersonID,
                 kind: kind,
                 familyRole: kind == .family ? familyRole : nil,
-                notes: notes
+                mutual: mutual,
+                notes: notes,
+                source: .personStatement,
+                expecting: expectedClaims
             )
-            if mutual {
-                try store.addRelationshipClaim(
-                    from: otherPersonID,
-                    to: person.id,
-                    kind: kind,
-                    familyRole: kind == .family ? familyRole.inverse : nil,
-                    notes: notes
-                )
-            }
             dismiss()
         } catch {
             errorMessage = error.localizedDescription

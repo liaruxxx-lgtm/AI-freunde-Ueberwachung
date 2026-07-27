@@ -54,7 +54,8 @@ enum ProfileColorCodec {
     }
 
     static func displayName(for value: String) -> String {
-        normalizedHex(value) == nil ? value : "Eigene Farbe"
+        guard let hex = normalizedHex(value) else { return value }
+        return "Eigene Farbe \(hex)"
     }
 
     static func storageValue(for color: Color) -> String? {
@@ -411,7 +412,7 @@ struct ProfileDetailsEditor: View {
                     systemImage: "rectangle.compress.vertical"
                 )
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(AppTheme.berry)
+                .foregroundStyle(AppTheme.berryText)
                 Spacer()
                 if expandedCategoryID != nil {
                     Button("Zuklappen") {
@@ -454,7 +455,7 @@ struct ProfileDetailsEditor: View {
                         if count > 0 {
                             Text("\(count)")
                                 .font(.caption.weight(.bold))
-                                .foregroundStyle(AppTheme.berry)
+                                .foregroundStyle(AppTheme.berryText)
                                 .padding(.horizontal, 7)
                                 .padding(.vertical, 3)
                                 .background(AppTheme.berry.opacity(0.1), in: Capsule())
@@ -493,7 +494,7 @@ struct ProfileDetailsEditor: View {
                                 title: ProfileSuggestionCatalog.displayLabel(for: key),
                                 placeholder: "Wert eingeben",
                                 suggestions: [],
-                                tint: AppTheme.plum,
+                                tint: AppTheme.plumText,
                                 values: valuesBinding(for: key)
                             )
                         }
@@ -533,7 +534,7 @@ struct ProfileDetailsEditor: View {
         VStack(alignment: .leading, spacing: 7) {
             Label(definition.label, systemImage: definition.systemImage)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(AppTheme.plum)
+                .foregroundStyle(AppTheme.plumText)
             if definition.id == "favoriteColors" {
                 FavoriteColorPickerField(
                     values: valuesBinding(for: definition.id)
@@ -543,7 +544,7 @@ struct ProfileDetailsEditor: View {
                     title: definition.label,
                     placeholder: "\(definition.label) eingeben",
                     suggestions: definition.suggestions,
-                    tint: AppTheme.berry,
+                    tint: AppTheme.berryText,
                     values: valuesBinding(for: definition.id)
                 )
             }
@@ -551,7 +552,7 @@ struct ProfileDetailsEditor: View {
         .padding(11)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(
-            Color.white.opacity(0.58),
+            .regularMaterial,
             in: RoundedRectangle(cornerRadius: 13)
         )
     }
@@ -672,7 +673,7 @@ struct FavoriteColorPickerField: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 5)
                         .background(
-                            Color.white.opacity(0.72),
+                            .thinMaterial,
                             in: Capsule()
                         )
                         .overlay {
@@ -1040,7 +1041,7 @@ struct LocationAutocompleteField: View {
                         } label: {
                             HStack(spacing: 10) {
                                 Image(systemName: "mappin.circle.fill")
-                                    .foregroundStyle(AppTheme.berry)
+                                    .foregroundStyle(AppTheme.berryText)
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(completion.title)
                                         .font(.callout.weight(.semibold))
@@ -1185,7 +1186,7 @@ private struct LocationMapPickerView: View {
                     if let errorMessage {
                         Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)
-                            .foregroundStyle(AppTheme.coral)
+                            .foregroundStyle(AppTheme.coralText)
                     }
 
                     Spacer()
@@ -1193,7 +1194,7 @@ private struct LocationMapPickerView: View {
                     if !selectedName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Label(selectedName, systemImage: "mappin.and.ellipse")
                             .font(.callout.weight(.semibold))
-                            .foregroundStyle(AppTheme.plum)
+                            .foregroundStyle(AppTheme.plumText)
                     }
                 }
                 .padding(14)

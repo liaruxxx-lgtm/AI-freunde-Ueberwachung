@@ -1,5 +1,11 @@
+import AVFoundation
 import Combine
+import Darwin
 import Foundation
+import ImageIO
+
+@_silgen_name("flock")
+private func systemFlock(_ descriptor: Int32, _ operation: Int32) -> Int32
 
 // MARK: - Shared repository paths
 
@@ -95,7 +101,7 @@ public enum LibraryPaths {
 
 // MARK: - Store
 
-public enum LibraryStoreError: LocalizedError {
+public enum LibraryStoreError: LocalizedError, Equatable {
     case emptyPersonName
     case personNotFound(UUID)
     case relationshipNotFound(UUID)
@@ -109,6 +115,17 @@ public enum LibraryStoreError: LocalizedError {
     case unsupportedMedia(URL)
     case invalidProfileLink(String)
     case invalidSchemaVersion(Int)
+    case libraryUnavailable
+    case backupNotFound
+    case databaseChangedExternally
+    case databaseLockUnavailable
+    case invalidStoredMediaFilename(String)
+    case invalidDatabaseStructure(String)
+    case personChangedExternally
+    case mediaChangedExternally
+    case relationshipChangedExternally
+    case groupChangedExternally
+    case relationshipKindConflict
 
     public var errorDescription: String? {
         switch self {
@@ -138,18 +155,105 @@ public enum LibraryStoreError: LocalizedError {
             "Der Link „\(value)“ ist keine gültige öffentliche HTTPS-Adresse."
         case let .invalidSchemaVersion(version):
             "Die Datenbankversion \(version) ist neuer als diese App unterstützt."
+        case .libraryUnavailable:
+            "Die Bibliothek ist zum Schutz deiner Daten schreibgeschützt, bis sie wieder erfolgreich geladen wurde."
+        case .backupNotFound:
+            "Es wurde keine wiederherstellbare Datenbanksicherung gefunden."
+        case .databaseChangedExternally:
+            "Die Datenbank wurde außerhalb der App geändert. Deine Änderung wurde nicht gespeichert. Lade die Bibliothek neu und versuche es danach noch einmal."
+        case .databaseLockUnavailable:
+            "Die Datenbank konnte nicht sicher für den Zugriff gesperrt werden."
+        case let .invalidStoredMediaFilename(filename):
+            "Der gespeicherte Medien-Dateiname „\(filename)“ ist unsicher oder ungültig."
+        case let .invalidDatabaseStructure(reason):
+            "Die Datenbank enthält widersprüchliche Daten: \(reason)"
+        case .personChangedExternally:
+            "Dieses Profil wurde inzwischen an anderer Stelle geändert. Deine ältere Fassung wurde nicht gespeichert. Schließe den Editor und öffne das Profil erneut."
+        case .mediaChangedExternally:
+            "Dieses Medium wurde inzwischen an anderer Stelle geändert. Deine ältere Fassung wurde nicht gespeichert. Öffne den Medieneditor erneut."
+        case .relationshipChangedExternally:
+            "Diese Verbindung wurde inzwischen an anderer Stelle geändert. Die ältere Änderung oder Löschung wurde nicht ausgeführt. Schließe den Editor und öffne die Verbindung erneut."
+        case .groupChangedExternally:
+            "Diese Gruppe wurde inzwischen an anderer Stelle geändert. Die ältere Änderung oder Löschung wurde nicht ausgeführt. Öffne die Gruppe erneut."
+        case .relationshipKindConflict:
+            "Zwischen diesen Personen besteht der gewählte Beziehungstyp bereits. Die vorhandene Verbindung wurde nicht überschrieben."
         }
     }
 }
 
 @MainActor
 public final class LibraryStore: ObservableObject {
+    private struct PendingMediaDeletion: Codable {
+        let mediaID: UUID
+        let storedFilename: String
+        let deleteStoredFile: Bool
+
+        init(
+            mediaID: UUID,
+            storedFilename: String,
+            deleteStoredFile: Bool = true
+        ) {
+            self.mediaID = mediaID
+            self.storedFilename = storedFilename
+            self.deleteStoredFile = deleteStoredFile
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case mediaID
+            case storedFilename
+            case deleteStoredFile
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            mediaID = try container.decode(UUID.self, forKey: .mediaID)
+            storedFilename = try container.decode(
+                String.self,
+                forKey: .storedFilename
+            )
+            deleteStoredFile = try container.decodeIfPresent(
+                Bool.self,
+                forKey: .deleteStoredFile
+            ) ?? true
+        }
+    }
+
+    private static let mediaDeletionJournalPrefix = ".delete-"
+    private static let mediaDeletionJournalSuffix = ".json"
+
     @Published public private(set) var data: LibraryData
     @Published public private(set) var lastError: String?
+    @Published public private(set) var isLibraryAvailable = true
     @Published public var presentNewPersonSheet = false
 
     public let databaseURL: URL
     public let mediaDirectory: URL
+    private var lastPersistedSnapshot: Data?
+
+    public var databaseBackupURL: URL {
+        databaseURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("friends.backup.json", isDirectory: false)
+    }
+
+    public var databasePreviousURL: URL {
+        databaseURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("friends.previous.json", isDirectory: false)
+    }
+
+    private var mediaDeletionJournalDirectory: URL {
+        databaseURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(
+                ".MediaDeletionJournal",
+                isDirectory: true
+            )
+    }
+
+    public var hasDatabaseBackup: Bool {
+        FileManager.default.fileExists(atPath: databaseBackupURL.path)
+    }
 
     public var people: [Person] { data.people }
     public var relationshipClaims: [RelationshipClaim] { data.relationshipClaims }
@@ -180,17 +284,31 @@ public final class LibraryStore: ObservableObject {
             try ensureRepositoryDirectories()
 
             if FileManager.default.fileExists(atPath: self.databaseURL.path) {
-                self.data = try Self.decodeLibrary(at: self.databaseURL)
-                guard self.data.schemaVersion <= LibraryData.currentSchemaVersion else {
-                    throw LibraryStoreError.invalidSchemaVersion(self.data.schemaVersion)
+                let loaded = try Self.withDatabaseLock(
+                    databaseURL: self.databaseURL,
+                    mode: LOCK_SH
+                ) {
+                    let loaded = try Self.loadValidatedLibrary(
+                        at: self.databaseURL
+                    )
+                    try? loaded.encoded.write(
+                        to: self.databaseBackupURL,
+                        options: [.atomic]
+                    )
+                    return loaded
                 }
-                refreshInferredFriendshipGroups()
+                self.data = loaded.data
+                self.lastPersistedSnapshot = loaded.encoded
             } else {
                 self.data = seedDemoData ? Self.demoLibrary() : LibraryData()
                 refreshInferredFriendshipGroups()
                 try save()
             }
+            try recoverPendingMediaDeletions()
+            repairInvalidAvatarReferences()
+            refreshInferredFriendshipGroups()
         } catch {
+            self.isLibraryAvailable = false
             self.lastError = error.localizedDescription
         }
     }
@@ -199,14 +317,26 @@ public final class LibraryStore: ObservableObject {
 
     public func reload() throws {
         do {
-            let loaded = try Self.decodeLibrary(at: databaseURL)
-            guard loaded.schemaVersion <= LibraryData.currentSchemaVersion else {
-                throw LibraryStoreError.invalidSchemaVersion(loaded.schemaVersion)
+            let loaded = try Self.withDatabaseLock(
+                databaseURL: databaseURL,
+                mode: LOCK_SH
+            ) {
+                let loaded = try Self.loadValidatedLibrary(at: databaseURL)
+                try? loaded.encoded.write(
+                    to: databaseBackupURL,
+                    options: [.atomic]
+                )
+                return loaded
             }
-            data = loaded
+            data = loaded.data
+            lastPersistedSnapshot = loaded.encoded
+            try recoverPendingMediaDeletions()
+            repairInvalidAvatarReferences()
             refreshInferredFriendshipGroups()
+            isLibraryAvailable = true
             lastError = nil
         } catch {
+            isLibraryAvailable = false
             lastError = error.localizedDescription
             throw error
         }
@@ -215,15 +345,145 @@ public final class LibraryStore: ObservableObject {
     /// Encodes the complete library and atomically replaces `friends.json`.
     public func save() throws {
         do {
+            guard isLibraryAvailable else {
+                throw LibraryStoreError.libraryUnavailable
+            }
             try ensureRepositoryDirectories()
-            data.schemaVersion = LibraryData.currentSchemaVersion
-            data.lastUpdated = Date()
+            let encoded = try encodedLibraryDataForPersistence()
 
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            let encoded = try encoder.encode(data)
+            try Self.withDatabaseLock(
+                databaseURL: databaseURL,
+                mode: LOCK_EX
+            ) {
+                try persistEncodedLibraryDataAssumingDatabaseLock(
+                    encoded,
+                    expectedSnapshot: lastPersistedSnapshot
+                )
+            }
+            lastPersistedSnapshot = encoded
+            lastError = nil
+        } catch {
+            if error as? LibraryStoreError == .databaseChangedExternally {
+                isLibraryAvailable = false
+            }
+            lastError = error.localizedDescription
+            throw error
+        }
+    }
+
+    private func encodedLibraryDataForPersistence() throws -> Data {
+        data.schemaVersion = LibraryData.currentSchemaVersion
+        data.lastUpdated = Date()
+        try Self.validateLoadedLibrary(data)
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [
+            .prettyPrinted,
+            .sortedKeys,
+            .withoutEscapingSlashes,
+        ]
+        return try encoder.encode(data)
+    }
+
+    private func persistEncodedLibraryDataAssumingDatabaseLock(
+        _ encoded: Data,
+        expectedSnapshot: Data?
+    ) throws {
+        let fileManager = FileManager.default
+        let currentSnapshot = try currentDatabaseSnapshotAssumingLock()
+        try requireExpectedDatabaseSnapshotAssumingLock(
+            expectedSnapshot,
+            currentSnapshot: currentSnapshot
+        )
+
+        let previousBackup = fileManager.fileExists(
+            atPath: databaseBackupURL.path
+        )
+            ? try Data(contentsOf: databaseBackupURL)
+            : nil
+
+        if let currentSnapshot {
+            try currentSnapshot.write(
+                to: databasePreviousURL,
+                options: [.atomic]
+            )
+        }
+        try encoded.write(to: databaseBackupURL, options: [.atomic])
+        do {
             try encoded.write(to: databaseURL, options: [.atomic])
+        } catch {
+            if let previousBackup {
+                try? previousBackup.write(
+                    to: databaseBackupURL,
+                    options: [.atomic]
+                )
+            } else {
+                try? fileManager.removeItem(at: databaseBackupURL)
+            }
+            throw error
+        }
+    }
+
+    private func currentDatabaseSnapshotAssumingLock() throws -> Data? {
+        FileManager.default.fileExists(atPath: databaseURL.path)
+            ? try Data(contentsOf: databaseURL)
+            : nil
+    }
+
+    private func requireExpectedDatabaseSnapshotAssumingLock(
+        _ expectedSnapshot: Data?,
+        currentSnapshot: Data? = nil
+    ) throws {
+        let current = try currentSnapshot
+            ?? currentDatabaseSnapshotAssumingLock()
+        switch (expectedSnapshot, current) {
+        case (nil, nil):
+            break
+        case let (expected?, current?) where expected == current:
+            break
+        default:
+            throw LibraryStoreError.databaseChangedExternally
+        }
+    }
+
+    public func restoreDatabaseBackup() throws {
+        do {
+            guard hasDatabaseBackup else {
+                throw LibraryStoreError.backupNotFound
+            }
+            try ensureRepositoryDirectories()
+            let loaded = try Self.withDatabaseLock(
+                databaseURL: databaseURL,
+                mode: LOCK_EX
+            ) {
+                let loaded = try Self.loadValidatedLibrary(
+                    at: databaseBackupURL
+                )
+
+                if FileManager.default.fileExists(atPath: databaseURL.path) {
+                    let failedCopyURL = databaseURL
+                        .deletingLastPathComponent()
+                        .appendingPathComponent(
+                            "friends.nicht-geladen-"
+                                + "\(Self.recoveryTimestamp())-"
+                                + "\(UUID().uuidString.lowercased()).json",
+                            isDirectory: false
+                        )
+                    let currentBytes = try Data(contentsOf: databaseURL)
+                    try currentBytes.write(to: failedCopyURL, options: [.atomic])
+                }
+
+                try loaded.encoded.write(to: databaseURL, options: [.atomic])
+                return loaded
+            }
+
+            data = loaded.data
+            lastPersistedSnapshot = loaded.encoded
+            try recoverPendingMediaDeletions()
+            repairInvalidAvatarReferences()
+            refreshInferredFriendshipGroups()
+            isLibraryAvailable = true
             lastError = nil
         } catch {
             lastError = error.localizedDescription
@@ -231,11 +491,195 @@ public final class LibraryStore: ObservableObject {
         }
     }
 
-    private static func decodeLibrary(at url: URL) throws -> LibraryData {
+    private static func loadLibrary(at url: URL) throws -> (
+        data: LibraryData,
+        encoded: Data
+    ) {
         let encoded = try Data(contentsOf: url)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(LibraryData.self, from: encoded)
+        return (try decoder.decode(LibraryData.self, from: encoded), encoded)
+    }
+
+    private static func loadValidatedLibrary(at url: URL) throws -> (
+        data: LibraryData,
+        encoded: Data
+    ) {
+        let loaded = try loadLibrary(at: url)
+        guard loaded.data.schemaVersion <= LibraryData.currentSchemaVersion else {
+            throw LibraryStoreError.invalidSchemaVersion(
+                loaded.data.schemaVersion
+            )
+        }
+        try validateLoadedLibrary(loaded.data)
+        return loaded
+    }
+
+    private static func validateLoadedLibrary(_ library: LibraryData) throws {
+        try requireUniqueIDs(library.people, collection: "Personen")
+        try requireUniqueIDs(
+            library.relationshipClaims,
+            collection: "Beziehungen"
+        )
+        try requireUniqueIDs(library.media, collection: "Medien")
+        try requireUniqueIDs(library.observations, collection: "Beobachtungen")
+        try requireUniqueIDs(library.groups, collection: "Gruppen")
+
+        let personIDs = Set(library.people.map(\.id))
+        let mediaIDs = Set(library.media.map(\.id))
+
+        for person in library.people {
+            guard !person.name.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ).isEmpty else {
+                throw LibraryStoreError.invalidDatabaseStructure(
+                    "Eine Person hat keinen Namen."
+                )
+            }
+        }
+
+        var storedMediaFilenames = Set<String>()
+        for item in library.media {
+            try validateStoredMediaFilename(item.storedFilename)
+            let normalizedFilename = item.storedFilename
+                .precomposedStringWithCanonicalMapping
+                .folding(
+                    options: [.caseInsensitive],
+                    locale: Locale(identifier: "en_US_POSIX")
+                )
+            guard storedMediaFilenames.insert(normalizedFilename).inserted else {
+                throw LibraryStoreError.invalidDatabaseStructure(
+                    "Mehrere Medien verwenden denselben gespeicherten Dateinamen."
+                )
+            }
+            let unknownPeople = Set(item.personIDs).subtracting(personIDs)
+            guard unknownPeople.isEmpty else {
+                throw LibraryStoreError.invalidDatabaseStructure(
+                    "Ein Medium verweist auf eine unbekannte Person."
+                )
+            }
+        }
+
+        for claim in library.relationshipClaims {
+            guard claim.fromPersonID != claim.toPersonID else {
+                throw LibraryStoreError.invalidDatabaseStructure(
+                    "Eine Beziehung verweist zweimal auf dieselbe Person."
+                )
+            }
+            guard personIDs.contains(claim.fromPersonID),
+                  personIDs.contains(claim.toPersonID)
+            else {
+                throw LibraryStoreError.invalidDatabaseStructure(
+                    "Eine Beziehung verweist auf eine unbekannte Person."
+                )
+            }
+        }
+
+        for observation in library.observations {
+            guard personIDs.contains(observation.personID) else {
+                throw LibraryStoreError.invalidDatabaseStructure(
+                    "Eine Beobachtung verweist auf eine unbekannte Person."
+                )
+            }
+            guard observation.confidence.isFinite,
+                  (0 ... 1).contains(observation.confidence)
+            else {
+                throw LibraryStoreError.invalidDatabaseStructure(
+                    "Eine Beobachtung hat einen ungültigen Vertrauenswert."
+                )
+            }
+            let unknownMedia = Set(observation.evidenceMediaIDs)
+                .subtracting(mediaIDs)
+            guard unknownMedia.isEmpty else {
+                throw LibraryStoreError.invalidDatabaseStructure(
+                    "Eine Beobachtung verweist auf ein unbekanntes Medium."
+                )
+            }
+        }
+
+        for group in library.groups {
+            guard group.confidence.isFinite,
+                  (0 ... 1).contains(group.confidence)
+            else {
+                throw LibraryStoreError.invalidDatabaseStructure(
+                    "Eine Gruppe hat einen ungültigen Vertrauenswert."
+                )
+            }
+            let unknownPeople = Set(group.memberIDs).subtracting(personIDs)
+            guard unknownPeople.isEmpty else {
+                throw LibraryStoreError.invalidDatabaseStructure(
+                    "Eine Gruppe verweist auf eine unbekannte Person."
+                )
+            }
+        }
+    }
+
+    private static func requireUniqueIDs<Item: Identifiable>(
+        _ items: [Item],
+        collection: String
+    ) throws where Item.ID == UUID {
+        guard Set(items.map(\.id)).count == items.count else {
+            throw LibraryStoreError.invalidDatabaseStructure(
+                "\(collection) enthalten doppelte IDs."
+            )
+        }
+    }
+
+    private static func validateStoredMediaFilename(_ filename: String) throws {
+        let trimmed = filename.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              filename != ".",
+              filename != "..",
+              !filename.hasPrefix("/"),
+              !filename.contains("/"),
+              !filename.contains("\\"),
+              !filename.contains("\0"),
+              URL(fileURLWithPath: filename).lastPathComponent == filename
+        else {
+            throw LibraryStoreError.invalidStoredMediaFilename(filename)
+        }
+    }
+
+    private static func recoveryTimestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter.string(from: Date())
+    }
+
+    private static func withDatabaseLock<Result>(
+        databaseURL: URL,
+        mode: Int32,
+        _ operation: () throws -> Result
+    ) throws -> Result {
+        let lockURL = databaseURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(
+                databaseURL.lastPathComponent + ".lock",
+                isDirectory: false
+            )
+        let descriptor = lockURL.path.withCString {
+            Darwin.open(
+                $0,
+                O_CREAT | O_RDWR,
+                S_IRUSR | S_IWUSR
+            )
+        }
+        guard descriptor >= 0 else {
+            throw LibraryStoreError.databaseLockUnavailable
+        }
+        defer {
+            _ = Darwin.close(descriptor)
+        }
+
+        guard systemFlock(descriptor, mode) == 0 else {
+            throw LibraryStoreError.databaseLockUnavailable
+        }
+        defer {
+            _ = systemFlock(descriptor, LOCK_UN)
+        }
+
+        return try operation()
     }
 
     private func ensureRepositoryDirectories() throws {
@@ -244,9 +688,213 @@ public final class LibraryStore: ObservableObject {
             at: databaseURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
+        if (try? fileManager.destinationOfSymbolicLink(
+            atPath: databaseURL.path
+        )) != nil {
+            throw LibraryStoreError.invalidDatabaseStructure(
+                "friends.json darf keine symbolische Verknüpfung sein."
+            )
+        }
         try fileManager.createDirectory(
             at: mediaDirectory,
             withIntermediateDirectories: true
+        )
+        let mediaDirectoryValues = try mediaDirectory.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard mediaDirectoryValues.isDirectory == true,
+              mediaDirectoryValues.isSymbolicLink != true
+        else {
+            throw LibraryStoreError.invalidDatabaseStructure(
+                "Der Medienordner ist kein sicherer lokaler Ordner."
+            )
+        }
+
+        try fileManager.createDirectory(
+            at: mediaDeletionJournalDirectory,
+            withIntermediateDirectories: true
+        )
+        let journalDirectoryValues = try mediaDeletionJournalDirectory
+            .resourceValues(
+                forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+            )
+        guard journalDirectoryValues.isDirectory == true,
+              journalDirectoryValues.isSymbolicLink != true
+        else {
+            throw LibraryStoreError.invalidDatabaseStructure(
+                "Der interne Medien-Löschordner ist unsicher."
+            )
+        }
+    }
+
+    private func openSecureMediaDirectoryDescriptor() throws -> Int32 {
+        let descriptor = mediaDirectory.path.withCString {
+            Darwin.open(
+                $0,
+                O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+            )
+        }
+        guard descriptor >= 0 else {
+            throw Self.posixFileError(
+                "Der Medienordner konnte nicht sicher geöffnet werden."
+            )
+        }
+
+        var information = stat()
+        guard Darwin.fstat(descriptor, &information) == 0,
+              information.st_mode & S_IFMT == S_IFDIR
+        else {
+            let error = Self.posixFileError(
+                "Der geöffnete Medienpfad ist kein sicherer Ordner."
+            )
+            _ = Darwin.close(descriptor)
+            throw error
+        }
+        return descriptor
+    }
+
+    private static func writePrivateMediaData(
+        _ data: Data,
+        temporaryFilename: String,
+        destinationFilename: String,
+        directoryDescriptor: Int32
+    ) throws {
+        try validateStoredMediaFilename(temporaryFilename)
+        try validateStoredMediaFilename(destinationFilename)
+
+        let descriptor = temporaryFilename.withCString {
+            Darwin.openat(
+                directoryDescriptor,
+                $0,
+                O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                S_IRUSR | S_IWUSR
+            )
+        }
+        guard descriptor >= 0 else {
+            throw posixFileError(
+                "Die private Profilbild-Datei konnte nicht erstellt werden."
+            )
+        }
+
+        var shouldRemoveTemporaryFile = true
+        defer {
+            _ = Darwin.close(descriptor)
+            if shouldRemoveTemporaryFile {
+                temporaryFilename.withCString {
+                    _ = Darwin.unlinkat(directoryDescriptor, $0, 0)
+                }
+            }
+        }
+
+        try data.withUnsafeBytes { bytes in
+            guard let baseAddress = bytes.baseAddress else { return }
+            var offset = 0
+            while offset < bytes.count {
+                let count = Darwin.write(
+                    descriptor,
+                    baseAddress.advanced(by: offset),
+                    bytes.count - offset
+                )
+                if count < 0, errno == EINTR {
+                    continue
+                }
+                guard count > 0 else {
+                    throw posixFileError(
+                        "Das Profilbild konnte nicht vollständig gespeichert werden."
+                    )
+                }
+                offset += count
+            }
+        }
+        guard Darwin.fsync(descriptor) == 0 else {
+            throw posixFileError(
+                "Das Profilbild konnte nicht sicher abgeschlossen werden."
+            )
+        }
+
+        let renameResult = temporaryFilename.withCString { temporaryName in
+            destinationFilename.withCString { destinationName in
+                Darwin.renameatx_np(
+                    directoryDescriptor,
+                    temporaryName,
+                    directoryDescriptor,
+                    destinationName,
+                    UInt32(RENAME_EXCL)
+                )
+            }
+        }
+        guard renameResult == 0 else {
+            throw posixFileError(
+                "Das Profilbild konnte nicht sicher übernommen werden."
+            )
+        }
+        shouldRemoveTemporaryFile = false
+        guard Darwin.fsync(directoryDescriptor) == 0 else {
+            destinationFilename.withCString {
+                _ = Darwin.unlinkat(directoryDescriptor, $0, 0)
+            }
+            _ = Darwin.fsync(directoryDescriptor)
+            throw posixFileError(
+                "Der Medienordner konnte nicht sicher abgeschlossen werden."
+            )
+        }
+    }
+
+    private func secureStoredMediaFileExists(
+        _ storedFilename: String,
+        directoryDescriptor: Int32
+    ) throws -> Bool {
+        try Self.validateStoredMediaFilename(storedFilename)
+        var information = stat()
+        let result = storedFilename.withCString {
+            Darwin.fstatat(
+                directoryDescriptor,
+                $0,
+                &information,
+                AT_SYMLINK_NOFOLLOW
+            )
+        }
+        guard result == 0 else {
+            if errno == ENOENT {
+                return false
+            }
+            throw Self.posixFileError(
+                "Die Mediendatei konnte nicht sicher geprüft werden."
+            )
+        }
+        guard information.st_mode & S_IFMT == S_IFREG else {
+            throw LibraryStoreError.invalidStoredMediaFilename(
+                storedFilename
+            )
+        }
+        return true
+    }
+
+    private func deleteStoredMediaFile(
+        _ storedFilename: String,
+        directoryDescriptor: Int32
+    ) throws {
+        guard try secureStoredMediaFileExists(
+            storedFilename,
+            directoryDescriptor: directoryDescriptor
+        ) else {
+            return
+        }
+        let result = storedFilename.withCString {
+            Darwin.unlinkat(directoryDescriptor, $0, 0)
+        }
+        guard result == 0 else {
+            throw Self.posixFileError(
+                "Die lokale Medienkopie konnte nicht gelöscht werden."
+            )
+        }
+    }
+
+    private static func posixFileError(_ description: String) -> NSError {
+        NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(errno),
+            userInfo: [NSLocalizedDescriptionKey: description]
         )
     }
 
@@ -323,6 +971,16 @@ public final class LibraryStore: ObservableObject {
             }
             data.people[index] = person
         }
+    }
+
+    public func updatePerson(
+        _ person: Person,
+        expecting original: Person
+    ) throws {
+        guard self.person(id: person.id) == original else {
+            throw LibraryStoreError.personChangedExternally
+        }
+        try updatePerson(person)
     }
 
     public func deletePerson(id: UUID) throws {
@@ -445,7 +1103,8 @@ public final class LibraryStore: ObservableObject {
         mutual: Bool,
         notes: String = "",
         source: EvidenceSource = .manual,
-        replacingKind: RelationshipKind? = nil
+        replacingKind: RelationshipKind? = nil,
+        expecting expectedClaims: [RelationshipClaim]? = nil
     ) throws -> [RelationshipClaim] {
         let forward = RelationshipClaim(
             fromPersonID: fromPersonID,
@@ -472,6 +1131,34 @@ public final class LibraryStore: ObservableObject {
         }
 
         let kindsToReplace = Set([kind, replacingKind].compactMap { $0 })
+        if let expectedClaims {
+            let currentClaims = matchingRelationshipClaims(
+                between: fromPersonID,
+                and: toPersonID,
+                kinds: kindsToReplace
+            )
+            guard normalizedRelationshipClaims(currentClaims)
+                == normalizedRelationshipClaims(expectedClaims)
+            else {
+                throw LibraryStoreError.relationshipChangedExternally
+            }
+        }
+
+        if let replacingKind,
+           replacingKind != kind {
+            let targetKindAlreadyExists = data.relationshipClaims.contains { claim in
+                let isSamePair =
+                    (claim.fromPersonID == fromPersonID
+                        && claim.toPersonID == toPersonID)
+                    || (claim.fromPersonID == toPersonID
+                        && claim.toPersonID == fromPersonID)
+                return isSamePair && claim.kind == kind
+            }
+            guard !targetKindAlreadyExists else {
+                throw LibraryStoreError.relationshipKindConflict
+            }
+        }
+
         try transaction(reinferGroups: true) {
             data.relationshipClaims.removeAll { claim in
                 let isSamePair =
@@ -487,15 +1174,22 @@ public final class LibraryStore: ObservableObject {
     public func deleteRelationshipPair(
         between firstPersonID: UUID,
         and secondPersonID: UUID,
-        kind: RelationshipKind
+        kind: RelationshipKind,
+        expecting expectedClaims: [RelationshipClaim]? = nil
     ) throws {
-        let matchingIDs = data.relationshipClaims.filter { claim in
-            let isSamePair =
-                (claim.fromPersonID == firstPersonID && claim.toPersonID == secondPersonID)
-                || (claim.fromPersonID == secondPersonID && claim.toPersonID == firstPersonID)
-            return isSamePair && claim.kind == kind
+        let matchingClaims = matchingRelationshipClaims(
+            between: firstPersonID,
+            and: secondPersonID,
+            kinds: [kind]
+        )
+        if let expectedClaims {
+            guard normalizedRelationshipClaims(matchingClaims)
+                == normalizedRelationshipClaims(expectedClaims)
+            else {
+                throw LibraryStoreError.relationshipChangedExternally
+            }
         }
-        guard !matchingIDs.isEmpty else {
+        guard !matchingClaims.isEmpty else {
             throw LibraryStoreError.relationshipPairNotFound
         }
 
@@ -507,6 +1201,27 @@ public final class LibraryStore: ObservableObject {
                 return isSamePair && claim.kind == kind
             }
         }
+    }
+
+    private func matchingRelationshipClaims(
+        between firstPersonID: UUID,
+        and secondPersonID: UUID,
+        kinds: Set<RelationshipKind>
+    ) -> [RelationshipClaim] {
+        data.relationshipClaims.filter { claim in
+            let isSamePair =
+                (claim.fromPersonID == firstPersonID
+                    && claim.toPersonID == secondPersonID)
+                || (claim.fromPersonID == secondPersonID
+                    && claim.toPersonID == firstPersonID)
+            return isSamePair && kinds.contains(claim.kind)
+        }
+    }
+
+    private func normalizedRelationshipClaims(
+        _ claims: [RelationshipClaim]
+    ) -> [RelationshipClaim] {
+        claims.sorted { $0.id.uuidString < $1.id.uuidString }
     }
 
     private func validate(_ claim: RelationshipClaim) throws {
@@ -534,10 +1249,48 @@ public final class LibraryStore: ObservableObject {
     }
 
     public func mediaURL(for item: MediaItem) -> URL {
-        // Persisted metadata may also be written by an external tool. Restrict it to
-        // a single filename so a malformed `../../…` value can never escape Media/.
-        let safeFilename = URL(fileURLWithPath: item.storedFilename).lastPathComponent
-        return mediaDirectory.appendingPathComponent(safeFilename, isDirectory: false)
+        (try? validatedMediaURL(for: item))
+            ?? mediaDirectory.appendingPathComponent(
+                ".invalid-reference-\(item.id.uuidString)",
+                isDirectory: false
+            )
+    }
+
+    public func validatedMediaURL(for item: MediaItem) throws -> URL {
+        try validatedMediaURL(storedFilename: item.storedFilename)
+    }
+
+    private func validatedMediaURL(storedFilename: String) throws -> URL {
+        try Self.validateStoredMediaFilename(storedFilename)
+
+        let base = mediaDirectory.standardizedFileURL
+        let candidate = base
+            .appendingPathComponent(storedFilename, isDirectory: false)
+            .standardizedFileURL
+        let resolvedBase = base.resolvingSymlinksInPath()
+        let resolvedCandidate = candidate.resolvingSymlinksInPath()
+        guard candidate != base,
+              candidate.deletingLastPathComponent() == base,
+              resolvedCandidate.deletingLastPathComponent() == resolvedBase
+        else {
+            throw LibraryStoreError.invalidStoredMediaFilename(
+                storedFilename
+            )
+        }
+
+        if FileManager.default.fileExists(atPath: candidate.path) {
+            let values = try candidate.resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+            )
+            guard values.isRegularFile == true,
+                  values.isSymbolicLink != true
+            else {
+                throw LibraryStoreError.invalidStoredMediaFilename(
+                    storedFilename
+                )
+            }
+        }
+        return candidate
     }
 
     public func setAvatarMediaID(_ mediaID: UUID?, for personID: UUID) throws {
@@ -570,36 +1323,61 @@ public final class LibraryStore: ObservableObject {
     public func importCroppedProfileImage(
         pngData: Data,
         originalFilename: String,
-        for personID: UUID
+        for personID: UUID,
+        source: ProfileImageImportSource = .file,
+        capturedAt: Date? = nil
     ) throws -> MediaItem {
         guard person(id: personID) != nil else {
             throw LibraryStoreError.personNotFound(personID)
+        }
+        guard let storedPNGData =
+            Self.canonicalCroppedProfilePNG(pngData)
+        else {
+            throw LibraryStoreError.unsupportedMedia(
+                URL(fileURLWithPath: originalFilename)
+            )
         }
         try ensureRepositoryDirectories()
 
         let previous = data
         let storedFilename = "\(UUID().uuidString.lowercased())-profile.png"
-        let destination = mediaDirectory
-            .appendingPathComponent(storedFilename, isDirectory: false)
-        let temporary = mediaDirectory
-            .appendingPathComponent(".crop-\(UUID().uuidString)", isDirectory: false)
+        let temporaryFilename = ".crop-\(UUID().uuidString)"
         let cleanOriginalName = originalFilename
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let displayFilename = cleanOriginalName.isEmpty
             ? "Profilbild-Zuschnitt.png"
             : "\(URL(fileURLWithPath: cleanOriginalName).deletingPathExtension().lastPathComponent)-Profilbild.png"
+        let tags = source == .camera
+            ? ["Profilbild-Zuschnitt", "Kameraaufnahme"]
+            : ["Profilbild-Zuschnitt"]
+        let notes = source == .camera
+            ? "Direkt mit einer Kamera aufgenommen; gespeichert wurde nur der quadratische Profilbild-Zuschnitt."
+            : "Quadratischer Profilbild-Zuschnitt; das ursprüngliche Bild wurde nicht verändert."
         let item = MediaItem(
             storedFilename: storedFilename,
             originalFilename: displayFilename,
             kind: .image,
             personIDs: [personID],
-            tags: ["Profilbild-Zuschnitt"],
-            notes: "Quadratischer Profilbild-Zuschnitt; das ursprüngliche Bild wurde nicht verändert."
+            capturedAt: capturedAt,
+            tags: tags,
+            notes: notes
         )
 
+        let mediaDirectoryDescriptor =
+            try openSecureMediaDirectoryDescriptor()
+        defer {
+            _ = Darwin.close(mediaDirectoryDescriptor)
+        }
+
+        var installedDestination = false
         do {
-            try pngData.write(to: temporary)
-            try FileManager.default.moveItem(at: temporary, to: destination)
+            try Self.writePrivateMediaData(
+                storedPNGData,
+                temporaryFilename: temporaryFilename,
+                destinationFilename: storedFilename,
+                directoryDescriptor: mediaDirectoryDescriptor
+            )
+            installedDestination = true
             data.media.append(item)
             guard let personIndex = data.people.firstIndex(where: { $0.id == personID })
             else {
@@ -610,8 +1388,12 @@ public final class LibraryStore: ObservableObject {
             return item
         } catch {
             data = previous
-            try? FileManager.default.removeItem(at: temporary)
-            try? FileManager.default.removeItem(at: destination)
+            if installedDestination {
+                try? deleteStoredMediaFile(
+                    storedFilename,
+                    directoryDescriptor: mediaDirectoryDescriptor
+                )
+            }
             lastError = error.localizedDescription
             throw error
         }
@@ -619,17 +1401,20 @@ public final class LibraryStore: ObservableObject {
 
     public func addMedia(_ item: MediaItem) throws {
         try validatePersonReferences(item.personIDs)
+        try Self.validateStoredMediaFilename(item.storedFilename)
         try transaction {
             if let index = data.media.firstIndex(where: { $0.id == item.id }) {
                 data.media[index] = item
             } else {
                 data.media.append(item)
             }
+            clearAvatarReferencesInvalidated(by: item)
         }
     }
 
     public func updateMedia(_ item: MediaItem) throws {
         try validatePersonReferences(item.personIDs)
+        try Self.validateStoredMediaFilename(item.storedFilename)
         guard data.media.contains(where: { $0.id == item.id }) else {
             throw LibraryStoreError.mediaNotFound(item.id)
         }
@@ -638,30 +1423,509 @@ public final class LibraryStore: ObservableObject {
                 throw LibraryStoreError.mediaNotFound(item.id)
             }
             data.media[index] = item
+            clearAvatarReferencesInvalidated(by: item)
+        }
+    }
+
+    public func updateMedia(
+        _ item: MediaItem,
+        expecting original: MediaItem
+    ) throws {
+        guard mediaItem(id: item.id) == original else {
+            throw LibraryStoreError.mediaChangedExternally
+        }
+        try updateMedia(item)
+    }
+
+    public func updateMediaAndRefreshPatterns(
+        _ item: MediaItem,
+        expecting original: MediaItem
+    ) throws {
+        try validatePersonReferences(item.personIDs)
+        try Self.validateStoredMediaFilename(item.storedFilename)
+        guard mediaItem(id: item.id) == original else {
+            throw LibraryStoreError.mediaChangedExternally
+        }
+        let affectedPeople = Set(original.personIDs).union(item.personIDs)
+        try transaction {
+            guard let index = data.media.firstIndex(where: { $0.id == item.id })
+            else {
+                throw LibraryStoreError.mediaNotFound(item.id)
+            }
+            data.media[index] = item
+            clearAvatarReferencesInvalidated(by: item)
+            refreshConfirmedClothingPatternsInPlace(for: affectedPeople)
+        }
+    }
+
+    private func clearAvatarReferencesInvalidated(by item: MediaItem) {
+        guard item.kind != .image || !item.personIDs.isEmpty else {
+            for index in data.people.indices
+            where data.people[index].avatarMediaID == item.id {
+                data.people[index].avatarMediaID = nil
+            }
+            return
+        }
+
+        for index in data.people.indices
+        where data.people[index].avatarMediaID == item.id {
+            if item.kind != .image
+                || !item.personIDs.contains(data.people[index].id) {
+                data.people[index].avatarMediaID = nil
+            }
+        }
+    }
+
+    private func repairInvalidAvatarReferences() {
+        let mediaByID = Dictionary(
+            data.media.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for index in data.people.indices {
+            guard let avatarID = data.people[index].avatarMediaID else {
+                continue
+            }
+            guard let avatar = mediaByID[avatarID],
+                  avatar.kind == .image,
+                  avatar.personIDs.contains(data.people[index].id)
+            else {
+                data.people[index].avatarMediaID = nil
+                continue
+            }
         }
     }
 
     public func deleteMedia(id: UUID, deleteStoredFile: Bool = false) throws {
+        guard isLibraryAvailable else {
+            throw LibraryStoreError.libraryUnavailable
+        }
         guard let item = mediaItem(id: id) else {
             throw LibraryStoreError.mediaNotFound(id)
         }
+        try ensureRepositoryDirectories()
+        let mediaDirectoryDescriptor = try openSecureMediaDirectoryDescriptor()
+        defer {
+            _ = Darwin.close(mediaDirectoryDescriptor)
+        }
 
-        try transaction {
-            data.media.removeAll { $0.id == id }
-            data.observations = data.observations.map { observation in
-                var updated = observation
-                updated.evidenceMediaIDs.removeAll { $0 == id }
-                return updated
+        let previousData = data
+        var cleanupNotice: String?
+        do {
+            try Self.withDatabaseLock(
+                databaseURL: databaseURL,
+                mode: LOCK_EX
+            ) {
+                try requireExpectedDatabaseSnapshotAssumingLock(
+                    lastPersistedSnapshot
+                )
+                try neutralizePendingMediaDeletionJournals(for: id)
+
+                var pendingDeletion: (
+                    journalURL: URL,
+                    record: PendingMediaDeletion
+                )?
+                if deleteStoredFile,
+                   try secureStoredMediaFileExists(
+                       item.storedFilename,
+                       directoryDescriptor: mediaDirectoryDescriptor
+                   ) {
+                    let record = PendingMediaDeletion(
+                        mediaID: item.id,
+                        storedFilename: item.storedFilename
+                    )
+                    let journalURL = mediaDeletionJournalDirectory
+                        .appendingPathComponent(
+                            Self.mediaDeletionJournalPrefix
+                                + "\(item.id.uuidString.lowercased())-"
+                                + "\(UUID().uuidString.lowercased())"
+                                + Self.mediaDeletionJournalSuffix,
+                            isDirectory: false
+                        )
+                    try JSONEncoder().encode(record).write(
+                        to: journalURL,
+                        options: [.atomic]
+                    )
+                    pendingDeletion = (journalURL, record)
+                }
+
+                do {
+                    data.media.removeAll { $0.id == id }
+                    data.observations = data.observations.map { observation in
+                        var updated = observation
+                        updated.evidenceMediaIDs.removeAll { $0 == id }
+                        return updated
+                    }
+                    for index in data.people.indices
+                    where data.people[index].avatarMediaID == id {
+                        data.people[index].avatarMediaID = nil
+                    }
+                    refreshConfirmedClothingPatternsInPlace(
+                        for: Set(item.personIDs)
+                    )
+
+                    let deletionSnapshot =
+                        try encodedLibraryDataForPersistence()
+                    try persistEncodedLibraryDataAssumingDatabaseLock(
+                        deletionSnapshot,
+                        expectedSnapshot: lastPersistedSnapshot
+                    )
+                    lastPersistedSnapshot = deletionSnapshot
+                } catch {
+                    data = previousData
+                    throw error
+                }
+
+                guard let pendingDeletion else {
+                    return
+                }
+
+                do {
+                    try deleteStoredMediaFile(
+                        pendingDeletion.record.storedFilename,
+                        directoryDescriptor: mediaDirectoryDescriptor
+                    )
+                } catch let fileDeletionError {
+                    let deletionState = data
+                    let deletionSnapshot = lastPersistedSnapshot
+                    data = previousData
+                    do {
+                        let rollbackSnapshot =
+                            try encodedLibraryDataForPersistence()
+                        try persistEncodedLibraryDataAssumingDatabaseLock(
+                            rollbackSnapshot,
+                            expectedSnapshot: deletionSnapshot
+                        )
+                        lastPersistedSnapshot = rollbackSnapshot
+                    } catch let rollbackError {
+                        data = deletionState
+                        throw rollbackError
+                    }
+
+                    try? neutralizePendingMediaDeletionJournals(for: id)
+                    throw fileDeletionError
+                }
+
+                do {
+                    try FileManager.default.removeItem(
+                        at: pendingDeletion.journalURL
+                    )
+                } catch {
+                    cleanupNotice = [
+                        "Die lokale Kopie wurde gelöscht.",
+                        "Ein internes Löschprotokoll konnte noch nicht entfernt werden",
+                        "und wird beim nächsten Start bereinigt:",
+                        error.localizedDescription,
+                    ].joined(separator: " ")
+                }
             }
-            for index in data.people.indices where data.people[index].avatarMediaID == id {
-                data.people[index].avatarMediaID = nil
+            lastError = cleanupNotice
+        } catch {
+            if error as? LibraryStoreError == .databaseChangedExternally {
+                isLibraryAvailable = false
+            }
+            lastError = error.localizedDescription
+            throw error
+        }
+    }
+
+    public func deleteMedia(
+        id: UUID,
+        deleteStoredFile: Bool = false,
+        expecting original: MediaItem
+    ) throws {
+        guard mediaItem(id: id) == original else {
+            throw LibraryStoreError.mediaChangedExternally
+        }
+        try deleteMedia(id: id, deleteStoredFile: deleteStoredFile)
+    }
+
+    private func neutralizePendingMediaDeletionJournals(
+        for mediaID: UUID
+    ) throws {
+        let fileManager = FileManager.default
+        let filenamePrefix = Self.mediaDeletionJournalPrefix
+            + mediaID.uuidString.lowercased()
+            + "-"
+        let entries = try fileManager.contentsOfDirectory(
+            at: mediaDeletionJournalDirectory,
+            includingPropertiesForKeys: [
+                .isRegularFileKey,
+                .isSymbolicLinkKey,
+            ]
+        )
+
+        for journalURL in entries
+        where journalURL.lastPathComponent.lowercased()
+            .hasPrefix(filenamePrefix)
+            && journalURL.lastPathComponent
+                .hasSuffix(Self.mediaDeletionJournalSuffix) {
+            let values = try journalURL.resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+            )
+            guard values.isRegularFile == true,
+                  values.isSymbolicLink != true
+            else {
+                throw LibraryStoreError.invalidDatabaseStructure(
+                    "Ein internes Medien-Löschprotokoll ist unsicher."
+                )
+            }
+
+            let record = try JSONDecoder().decode(
+                PendingMediaDeletion.self,
+                from: Data(contentsOf: journalURL)
+            )
+            guard record.mediaID == mediaID else {
+                throw LibraryStoreError.invalidDatabaseStructure(
+                    "Ein internes Medien-Löschprotokoll passt nicht zu seiner Datei."
+                )
+            }
+
+            let cancelled = PendingMediaDeletion(
+                mediaID: record.mediaID,
+                storedFilename: record.storedFilename,
+                deleteStoredFile: false
+            )
+            try JSONEncoder().encode(cancelled).write(
+                to: journalURL,
+                options: [.atomic]
+            )
+            try fileManager.removeItem(at: journalURL)
+        }
+    }
+
+    private func recoverPendingMediaDeletions() throws {
+        try ensureRepositoryDirectories()
+        let mediaDirectoryDescriptor = try openSecureMediaDirectoryDescriptor()
+        defer {
+            _ = Darwin.close(mediaDirectoryDescriptor)
+        }
+
+        let loaded = try Self.withDatabaseLock(
+            databaseURL: databaseURL,
+            mode: LOCK_EX
+        ) {
+            let latest = try Self.loadValidatedLibrary(at: databaseURL)
+            try recoverPendingMediaDeletionsAssumingDatabaseLock(
+                currentLibrary: latest.data,
+                mediaDirectoryDescriptor: mediaDirectoryDescriptor
+            )
+            return latest
+        }
+        data = loaded.data
+        lastPersistedSnapshot = loaded.encoded
+    }
+
+    private func recoverPendingMediaDeletionsAssumingDatabaseLock(
+        currentLibrary: LibraryData,
+        mediaDirectoryDescriptor: Int32
+    ) throws {
+        let fileManager = FileManager.default
+        let entries = try fileManager.contentsOfDirectory(
+            at: mediaDeletionJournalDirectory,
+            includingPropertiesForKeys: [
+                .isRegularFileKey,
+                .isSymbolicLinkKey,
+            ]
+        )
+
+        for journalURL in entries {
+            let filename = journalURL.lastPathComponent
+            guard filename.hasPrefix(Self.mediaDeletionJournalPrefix),
+                  filename.hasSuffix(Self.mediaDeletionJournalSuffix)
+            else {
+                continue
+            }
+
+            let values = try journalURL.resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+            )
+            guard values.isRegularFile == true,
+                  values.isSymbolicLink != true
+            else {
+                throw LibraryStoreError.invalidDatabaseStructure(
+                    "Ein internes Medien-Löschprotokoll ist unsicher."
+                )
+            }
+
+            let encoded = try Data(contentsOf: journalURL)
+            let record = try JSONDecoder().decode(
+                PendingMediaDeletion.self,
+                from: encoded
+            )
+            try Self.validateStoredMediaFilename(record.storedFilename)
+
+            let expectedPrefix = Self.mediaDeletionJournalPrefix
+                + record.mediaID.uuidString.lowercased()
+                + "-"
+            guard filename.lowercased().hasPrefix(expectedPrefix) else {
+                throw LibraryStoreError.invalidDatabaseStructure(
+                    "Ein internes Medien-Löschprotokoll passt nicht zu seiner Datei."
+                )
+            }
+
+            guard record.deleteStoredFile else {
+                try fileManager.removeItem(at: journalURL)
+                continue
+            }
+
+            if let currentItem = currentLibrary.media.first(where: {
+                $0.id == record.mediaID
+            }) {
+                guard currentItem.storedFilename == record.storedFilename else {
+                    throw LibraryStoreError.invalidDatabaseStructure(
+                        "Ein offener Medien-Löschvorgang verweist auf eine andere Datei."
+                    )
+                }
+                try fileManager.removeItem(at: journalURL)
+                continue
+            }
+
+            try deleteStoredMediaFile(
+                record.storedFilename,
+                directoryDescriptor: mediaDirectoryDescriptor
+            )
+            try fileManager.removeItem(at: journalURL)
+        }
+    }
+
+    @discardableResult
+    public func restoreMissingMediaFile(
+        id: UUID,
+        from sourceURL: URL,
+        expecting original: MediaItem
+    ) throws -> MediaItem {
+        guard mediaItem(id: id) == original else {
+            throw LibraryStoreError.mediaChangedExternally
+        }
+        try ensureRepositoryDirectories()
+
+        let scopedAccess = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if scopedAccess {
+                sourceURL.stopAccessingSecurityScopedResource()
             }
         }
 
-        if deleteStoredFile {
-            let fileURL = mediaURL(for: item)
-            if FileManager.default.fileExists(atPath: fileURL.path) {
-                try FileManager.default.removeItem(at: fileURL)
+        let sourceValues = try sourceURL.resourceValues(
+            forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
+        )
+        guard sourceValues.isRegularFile == true,
+              sourceValues.isSymbolicLink != true,
+              (sourceValues.fileSize ?? 0) > 0,
+              try Self.mediaKind(for: sourceURL) == original.kind
+        else {
+            throw LibraryStoreError.unsupportedMedia(sourceURL)
+        }
+
+        let destination = try validatedMediaURL(for: original)
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            throw CocoaError(.fileWriteFileExists)
+        }
+        let temporary = mediaDirectory.appendingPathComponent(
+            ".restore-\(UUID().uuidString)",
+            isDirectory: false
+        )
+
+        do {
+            try FileManager.default.copyItem(at: sourceURL, to: temporary)
+            try Self.validateMediaContents(
+                at: temporary,
+                expectedKind: original.kind,
+                reportedURL: sourceURL
+            )
+            try FileManager.default.moveItem(at: temporary, to: destination)
+
+            var updated = original
+            updated.originalFilename = sourceURL.lastPathComponent
+            do {
+                try updateMedia(updated, expecting: original)
+            } catch {
+                try? FileManager.default.removeItem(at: destination)
+                throw error
+            }
+            return updated
+        } catch {
+            try? FileManager.default.removeItem(at: temporary)
+            lastError = error.localizedDescription
+            throw error
+        }
+    }
+
+    /// Creates explainable style observations from user-confirmed media tags only.
+    func refreshConfirmedClothingPatterns(for personIDs: [UUID]) throws {
+        try transaction {
+            refreshConfirmedClothingPatternsInPlace(for: Set(personIDs))
+        }
+    }
+
+    private func refreshConfirmedClothingPatternsInPlace(
+        for personIDs: Set<UUID>
+    ) {
+        let knownMediaIDs = Set(data.media.map(\.id))
+
+        for personID in personIDs {
+            let personMedia = data.media.filter {
+                $0.personIDs.contains(personID)
+            }
+            var evidenceByTag: [String: [UUID]] = [:]
+            for item in personMedia {
+                for tag in Set(item.clothingTags) {
+                    evidenceByTag[tag, default: []].append(item.id)
+                }
+            }
+
+            var activeObservationIDs = Set<UUID>()
+            for (tag, evidenceIDs) in evidenceByTag {
+                let ratio = Double(evidenceIDs.count)
+                    / Double(personMedia.count)
+                guard evidenceIDs.count >= 3, ratio >= 0.5 else {
+                    continue
+                }
+
+                let value = "Trägt häufig \(tag) – auf "
+                    + "\(evidenceIDs.count) von \(personMedia.count) "
+                    + "bestätigten Aufnahmen."
+                if let index = data.observations.firstIndex(where: {
+                    $0.personID == personID
+                        && $0.category == .clothing
+                        && $0.source == .mediaAnalysis
+                        && $0.value.localizedCaseInsensitiveContains(tag)
+                }) {
+                    data.observations[index].value = value
+                    data.observations[index].confidence = min(
+                        0.96,
+                        0.55 + ratio * 0.4
+                    )
+                    data.observations[index].evidenceMediaIDs = evidenceIDs
+                    if data.observations[index].status == .archived {
+                        data.observations[index].status = .likely
+                    }
+                    activeObservationIDs.insert(data.observations[index].id)
+                } else {
+                    let observation = Observation(
+                        personID: personID,
+                        category: .clothing,
+                        value: value,
+                        status: .likely,
+                        confidence: min(0.96, 0.55 + ratio * 0.4),
+                        source: .mediaAnalysis,
+                        evidenceMediaIDs: evidenceIDs
+                    )
+                    data.observations.append(observation)
+                    activeObservationIDs.insert(observation.id)
+                }
+            }
+
+            for index in data.observations.indices
+            where data.observations[index].personID == personID
+                && data.observations[index].category == .clothing
+                && data.observations[index].source == .mediaAnalysis
+                && !activeObservationIDs.contains(data.observations[index].id)
+                && data.observations[index].status != .archived {
+                data.observations[index].status = .archived
+                data.observations[index].evidenceMediaIDs.removeAll {
+                    !knownMediaIDs.contains($0)
+                }
             }
         }
     }
@@ -677,17 +1941,32 @@ public final class LibraryStore: ObservableObject {
 
         let previous = data
         var copiedURLs: [URL] = []
+        var stagedURLs: [URL] = []
         var imported: [MediaItem] = []
 
         do {
             for sourceURL in urls {
-                let kind = try Self.mediaKind(for: sourceURL)
                 let scopedAccess = sourceURL.startAccessingSecurityScopedResource()
                 defer {
                     if scopedAccess {
                         sourceURL.stopAccessingSecurityScopedResource()
                     }
                 }
+                let resourceValues = try sourceURL.resourceValues(
+                    forKeys: [
+                        .contentModificationDateKey,
+                        .fileSizeKey,
+                        .isRegularFileKey,
+                        .isSymbolicLinkKey,
+                    ]
+                )
+                guard resourceValues.isRegularFile == true,
+                      resourceValues.isSymbolicLink != true,
+                      (resourceValues.fileSize ?? 0) > 0
+                else {
+                    throw LibraryStoreError.unsupportedMedia(sourceURL)
+                }
+                let kind = try Self.mediaKind(for: sourceURL)
 
                 let fileExtension = sourceURL.pathExtension.lowercased()
                 let storedFilename = UUID().uuidString.lowercased()
@@ -696,21 +1975,24 @@ public final class LibraryStore: ObservableObject {
                     .appendingPathComponent(storedFilename, isDirectory: false)
                 let temporary = mediaDirectory
                     .appendingPathComponent(".import-\(UUID().uuidString)", isDirectory: false)
+                stagedURLs.append(temporary)
 
                 try FileManager.default.copyItem(at: sourceURL, to: temporary)
+                try Self.validateMediaContents(
+                    at: temporary,
+                    expectedKind: kind,
+                    reportedURL: sourceURL
+                )
                 try FileManager.default.moveItem(at: temporary, to: destination)
                 copiedURLs.append(destination)
 
-                let resourceValues = try? sourceURL.resourceValues(
-                    forKeys: [.contentModificationDateKey]
-                )
                 imported.append(
                     MediaItem(
                         storedFilename: storedFilename,
                         originalFilename: sourceURL.lastPathComponent,
                         kind: kind,
                         personIDs: personIDs,
-                        capturedAt: resourceValues?.contentModificationDate
+                        capturedAt: resourceValues.contentModificationDate
                     )
                 )
             }
@@ -722,6 +2004,9 @@ public final class LibraryStore: ObservableObject {
             data = previous
             for copiedURL in copiedURLs {
                 try? FileManager.default.removeItem(at: copiedURL)
+            }
+            for stagedURL in stagedURLs {
+                try? FileManager.default.removeItem(at: stagedURL)
             }
             lastError = error.localizedDescription
             throw error
@@ -743,6 +2028,111 @@ public final class LibraryStore: ObservableObject {
             return .video
         }
         throw LibraryStoreError.unsupportedMedia(url)
+    }
+
+    private static func validateMediaContents(
+        at url: URL,
+        expectedKind: MediaKind,
+        reportedURL: URL
+    ) throws {
+        switch expectedKind {
+        case .image:
+            guard let source = CGImageSourceCreateWithURL(
+                url as CFURL,
+                nil
+            ),
+                  CGImageSourceGetCount(source) > 0,
+                  CGImageSourceCreateImageAtIndex(source, 0, nil) != nil
+            else {
+                throw LibraryStoreError.unsupportedMedia(reportedURL)
+            }
+        case .video:
+            let asset = AVURLAsset(url: url)
+            guard asset.isPlayable,
+                  !asset.tracks(withMediaType: .video).isEmpty
+            else {
+                throw LibraryStoreError.unsupportedMedia(reportedURL)
+            }
+        }
+    }
+
+    private static func canonicalCroppedProfilePNG(
+        _ data: Data
+    ) -> Data? {
+        let pngSignature: [UInt8] = [
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+        ]
+        guard data.count >= pngSignature.count,
+              data.count <= 20 * 1_024 * 1_024,
+              Array(data.prefix(pngSignature.count)) == pngSignature,
+              let source = CGImageSourceCreateWithData(
+                  data as CFData,
+                  nil
+              ),
+              CGImageSourceGetCount(source) == 1,
+              let properties = CGImageSourceCopyPropertiesAtIndex(
+                  source,
+                  0,
+                  nil
+              ) as? [CFString: Any],
+              let width = (
+                  properties[kCGImagePropertyPixelWidth] as? NSNumber
+              )?.intValue,
+              let height = (
+                  properties[kCGImagePropertyPixelHeight] as? NSNumber
+              )?.intValue,
+              width > 0,
+              width == height,
+              width <= 4_096,
+              let image = CGImageSourceCreateImageAtIndex(
+                  source,
+                  0,
+                  nil
+              ),
+              let sRGB = CGColorSpace(name: CGColorSpace.sRGB)
+        else {
+            return nil
+        }
+
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: sRGB,
+            bitmapInfo:
+                CGImageAlphaInfo.premultipliedLast.rawValue
+                | CGBitmapInfo.byteOrder32Big.rawValue
+        ) else {
+            return nil
+        }
+        context.interpolationQuality = .high
+        context.setBlendMode(.copy)
+        context.draw(
+            image,
+            in: CGRect(x: 0, y: 0, width: width, height: height)
+        )
+        guard let normalizedImage = context.makeImage() else {
+            return nil
+        }
+
+        let normalizedData = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            normalizedData,
+            "public.png" as CFString,
+            1,
+            nil
+        ) else {
+            return nil
+        }
+        CGImageDestinationAddImage(destination, normalizedImage, nil)
+        guard CGImageDestinationFinalize(destination),
+              normalizedData.length <= 20 * 1_024 * 1_024
+        else {
+            return nil
+        }
+        return normalizedData as Data
     }
 
     // MARK: Observations CRUD
@@ -835,6 +2225,16 @@ public final class LibraryStore: ObservableObject {
         }
     }
 
+    public func updateGroup(
+        _ group: Group,
+        expecting original: Group
+    ) throws {
+        guard data.groups.first(where: { $0.id == group.id }) == original else {
+            throw LibraryStoreError.groupChangedExternally
+        }
+        try updateGroup(group)
+    }
+
     public func deleteGroup(id: UUID) throws {
         guard data.groups.contains(where: { $0.id == id }) else {
             throw LibraryStoreError.groupNotFound(id)
@@ -842,6 +2242,18 @@ public final class LibraryStore: ObservableObject {
         try transaction(reinferGroups: true) {
             data.groups.removeAll { $0.id == id }
         }
+    }
+
+    public func deleteGroup(
+        id: UUID,
+        expecting original: Group
+    ) throws {
+        guard id == original.id,
+              data.groups.first(where: { $0.id == id }) == original
+        else {
+            throw LibraryStoreError.groupChangedExternally
+        }
+        try deleteGroup(id: id)
     }
 
     // MARK: Friendship graph and maximal cliques
@@ -1197,24 +2609,112 @@ public final class LibraryStore: ObservableObject {
         let normalizedQuery = Self.normalized(query)
         guard !normalizedQuery.isEmpty else { return data.people }
 
-        return data.people
-            .filter { person in
-                person.allNames.contains {
-                    let name = Self.normalized($0)
-                    return name.contains(normalizedQuery) || normalizedQuery.contains(name)
+        let ignoredWords: Set<String> = [
+            "am", "an", "auf", "bitte", "das", "der", "die", "ein", "eine",
+            "einer", "finde", "fur", "hat", "haben", "im", "in", "ist",
+            "lebt", "mit", "oder", "person", "personen", "spielt", "spielen",
+            "such", "suche", "und", "von", "was", "welche", "welcher",
+            "welches", "wer", "wie", "wo", "wohnt", "zeige", "zu",
+        ]
+        let meaningfulTokens = normalizedQuery
+            .split(separator: " ")
+            .map(String.init)
+            .filter { !ignoredWords.contains($0) }
+        let queryTokens = meaningfulTokens.isEmpty
+            ? normalizedQuery.split(separator: " ").map(String.init)
+            : meaningfulTokens
+
+        let scored = data.people.compactMap { person -> (Person, Int)? in
+            var values = person.allNames
+            values.append(person.location ?? "")
+            values.append(person.summary)
+            values.append(contentsOf: person.temperamentTags)
+            values.append(contentsOf: person.interests)
+            values.append(contentsOf: person.profileDetails.values.flatMap { $0 })
+            values.append(
+                contentsOf: person.links.flatMap {
+                    [$0.title, $0.handle, $0.url, $0.platform.germanLabel]
                 }
-                || Self.normalized(person.summary).contains(normalizedQuery)
-                || person.interests.contains {
-                    Self.normalized($0).contains(normalizedQuery)
-                }
-                || person.links.contains {
-                    Self.normalized(
-                        [$0.title, $0.handle, $0.url, $0.platform.germanLabel]
-                            .joined(separator: " ")
-                    ).contains(normalizedQuery)
-                }
+            )
+            values.append(
+                contentsOf: data.observations
+                    .filter {
+                        $0.personID == person.id
+                            && $0.status == .confirmed
+                    }
+                    .flatMap { [$0.category.germanLabel, $0.value] }
+            )
+
+            let normalizedValues = values.map(Self.normalized)
+            let words = normalizedValues.flatMap {
+                $0.split(separator: " ").map(String.init)
             }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            let matchedTokens = queryTokens.filter { token in
+                normalizedValues.contains { $0.contains(token) }
+                    || words.contains {
+                        Self.searchWordsMatch(query: token, candidate: $0)
+                    }
+            }
+            guard matchedTokens.count == queryTokens.count else { return nil }
+
+            var score = matchedTokens.count * 10
+            if normalizedValues.contains(where: { $0.contains(normalizedQuery) }) {
+                score += 8
+            }
+            if person.allNames.contains(where: {
+                Self.normalized($0).contains(normalizedQuery)
+            }) {
+                score += 12
+            }
+            return (person, score)
+        }
+
+        return scored
+            .sorted {
+                if $0.1 != $1.1 { return $0.1 > $1.1 }
+                return $0.0.name.localizedCaseInsensitiveCompare($1.0.name)
+                    == .orderedAscending
+            }
+            .map(\.0)
+    }
+
+    private static func searchWordsMatch(
+        query: String,
+        candidate: String
+    ) -> Bool {
+        guard !query.isEmpty, !candidate.isEmpty else { return false }
+        if candidate.hasPrefix(query) || query.hasPrefix(candidate) {
+            return min(query.count, candidate.count) >= 3
+        }
+        guard min(query.count, candidate.count) >= 5,
+              abs(query.count - candidate.count) <= 1
+        else {
+            return false
+        }
+        return editDistance(query, candidate) <= 1
+    }
+
+    private static func editDistance(_ left: String, _ right: String) -> Int {
+        let lhs = Array(left)
+        let rhs = Array(right)
+        var previous = Array(0 ... rhs.count)
+
+        for (leftIndex, leftCharacter) in lhs.enumerated() {
+            var current = [leftIndex + 1]
+            current.reserveCapacity(rhs.count + 1)
+            for (rightIndex, rightCharacter) in rhs.enumerated() {
+                current.append(
+                    min(
+                        current[rightIndex] + 1,
+                        previous[rightIndex + 1] + 1,
+                        previous[rightIndex]
+                            + (leftCharacter == rightCharacter ? 0 : 1)
+                    )
+                )
+            }
+            previous = current
+        }
+        return previous.last ?? 0
     }
 
     private func peopleMentioned(in normalizedQuestion: String) -> [Person] {

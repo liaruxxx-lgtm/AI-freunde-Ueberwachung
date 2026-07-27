@@ -2,6 +2,7 @@ import SwiftUI
 
 struct NetworkView: View {
     @EnvironmentObject private var store: LibraryStore
+    @Environment(\.colorScheme) private var colorScheme
 
     @Binding var selectedPersonID: UUID?
     @Binding var section: AppSection?
@@ -42,14 +43,35 @@ struct NetworkView: View {
                     title: "Das Netzwerk ist noch leer",
                     message: "Lege Personen und Beziehungen an. Gegenseitige Freundschaften bilden automatisch sichtbare Gruppen."
                 )
+                Button("Person anlegen") {
+                    store.presentNewPersonSheet = true
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(AppTheme.berry)
                 Spacer()
             } else {
                 GeometryReader { geometry in
-                    graph(in: geometry.size)
+                    let canvasSize = graphCanvasSize(
+                        for: geometry.size
+                    )
+                    ScrollView([.horizontal, .vertical]) {
+                        graph(in: canvasSize)
+                            .frame(
+                                width: canvasSize.width,
+                                height: canvasSize.height
+                            )
+                            .accessibilityRepresentation {
+                                networkAccessibilityContent
+                            }
+                    }
+                    .defaultScrollAnchor(.center)
                 }
                 .background(
                     RadialGradient(
-                        colors: [.white.opacity(0.85), AppTheme.apricot.opacity(0.12)],
+                        colors: [
+                            AppTheme.canvas(for: colorScheme).opacity(0.96),
+                            AppTheme.apricot.opacity(0.12),
+                        ],
                         center: .center,
                         startRadius: 40,
                         endRadius: 520
@@ -72,31 +94,72 @@ struct NetworkView: View {
     private func graph(in size: CGSize) -> some View {
         let people = store.data.people
         let positions = positions(for: people, in: size)
-        let claims = filteredClaims
+        let edges = graphEdges(from: filteredClaims)
 
         return ZStack {
             Canvas { context, _ in
-                for claim in claims {
-                    guard let start = positions[claim.fromPersonID],
-                          let end = positions[claim.toPersonID] else { continue }
-
-                    let isMutual = claims.contains {
-                        $0.fromPersonID == claim.toPersonID &&
-                        $0.toPersonID == claim.fromPersonID &&
-                        $0.kind == claim.kind
+                for edge in edges {
+                    guard let start = positions[edge.firstPersonID],
+                          let end = positions[edge.secondPersonID]
+                    else {
+                        continue
                     }
 
+                    let deltaX = end.x - start.x
+                    let deltaY = end.y - start.y
+                    let length = max(hypot(deltaX, deltaY), 1)
+                    let laneDistance = edge.lane * 18
+                    let laneOffset = CGPoint(
+                        x: -deltaY / length * laneDistance,
+                        y: deltaX / length * laneDistance
+                    )
+                    let adjustedStart = CGPoint(
+                        x: start.x + laneOffset.x,
+                        y: start.y + laneOffset.y
+                    )
+                    let adjustedEnd = CGPoint(
+                        x: end.x + laneOffset.x,
+                        y: end.y + laneOffset.y
+                    )
+
                     var path = Path()
-                    path.move(to: start)
-                    path.addLine(to: end)
+                    path.move(to: adjustedStart)
+                    path.addLine(to: adjustedEnd)
                     context.stroke(
                         path,
-                        with: .color(color(for: claim.kind).opacity(isMutual ? 0.72 : 0.28)),
+                        with: .color(
+                            color(for: edge.kind).opacity(
+                                edge.isMutual ? 0.92 : 0.78
+                            )
+                        ),
                         style: StrokeStyle(
-                            lineWidth: isMutual ? 4 : 2,
+                            lineWidth: edge.isMutual ? 4 : 3,
                             lineCap: .round,
-                            dash: isMutual ? [] : [7, 6]
+                            dash: edge.isMutual ? [] : [7, 6]
                         )
+                    )
+
+                    let midpoint = CGPoint(
+                        x: (adjustedStart.x + adjustedEnd.x) / 2,
+                        y: (adjustedStart.y + adjustedEnd.y) / 2
+                    )
+                    let markerBounds = CGRect(
+                        x: midpoint.x - 13,
+                        y: midpoint.y - 13,
+                        width: 26,
+                        height: 26
+                    )
+                    context.fill(
+                        Path(ellipseIn: markerBounds),
+                        with: .color(
+                            AppTheme.canvas(for: colorScheme).opacity(0.92)
+                        )
+                    )
+                    context.draw(
+                        Text(edgeMarker(for: edge.kind))
+                            .font(.caption2.weight(.black))
+                            .foregroundStyle(color(for: edge.kind)),
+                        at: midpoint
                     )
                 }
             }
@@ -117,19 +180,90 @@ struct NetworkView: View {
     }
 
     private var filteredClaims: [RelationshipClaim] {
-        guard let selectedKind else { return store.data.relationshipClaims }
-        return store.data.relationshipClaims.filter { $0.kind == selectedKind }
+        let activeClaims = store.data.relationshipClaims.filter {
+            $0.status.supportsInference
+        }
+        guard let selectedKind else { return activeClaims }
+        return activeClaims.filter { $0.kind == selectedKind }
+    }
+
+    private func graphCanvasSize(for viewport: CGSize) -> CGSize {
+        let extraPeople = max(store.data.people.count - 12, 0)
+        let preferredSide = 700 + CGFloat(extraPeople) * 55
+        return CGSize(
+            width: max(viewport.width, preferredSide),
+            height: max(viewport.height, preferredSide)
+        )
+    }
+
+    private func graphEdges(
+        from claims: [RelationshipClaim]
+    ) -> [NetworkEdge] {
+        var seen = Set<String>()
+        var baseEdges: [NetworkEdge] = []
+
+        for claim in claims {
+            let pair = [
+                claim.fromPersonID.uuidString,
+                claim.toPersonID.uuidString,
+            ].sorted()
+            let pairKey = "\(pair[0])|\(pair[1])"
+            let key = "\(pairKey)|\(claim.kind.rawValue)"
+            guard seen.insert(key).inserted else { continue }
+            let canonicalFirstID = claim.fromPersonID.uuidString == pair[0]
+                ? claim.fromPersonID
+                : claim.toPersonID
+            let canonicalSecondID = canonicalFirstID == claim.fromPersonID
+                ? claim.toPersonID
+                : claim.fromPersonID
+            let isMutual = claims.contains {
+                $0.fromPersonID == claim.toPersonID
+                    && $0.toPersonID == claim.fromPersonID
+                    && $0.kind == claim.kind
+            }
+            baseEdges.append(
+                NetworkEdge(
+                    id: key,
+                    pairKey: pairKey,
+                    firstPersonID: canonicalFirstID,
+                    secondPersonID: canonicalSecondID,
+                    kind: claim.kind,
+                    isMutual: isMutual,
+                    lane: 0
+                )
+            )
+        }
+
+        let grouped = Dictionary(grouping: baseEdges, by: \.pairKey)
+        return baseEdges.map { edge in
+            let siblings = (grouped[edge.pairKey] ?? [])
+                .sorted { $0.kind.rawValue < $1.kind.rawValue }
+            let index = siblings.firstIndex(where: { $0.id == edge.id }) ?? 0
+            let centeredLane = CGFloat(index)
+                - CGFloat(siblings.count - 1) / 2
+            return NetworkEdge(
+                id: edge.id,
+                pairKey: edge.pairKey,
+                firstPersonID: edge.firstPersonID,
+                secondPersonID: edge.secondPersonID,
+                kind: edge.kind,
+                isMutual: edge.isMutual,
+                lane: centeredLane
+            )
+        }
     }
 
     private func positions(for people: [Person], in size: CGSize) -> [UUID: CGPoint] {
         guard !people.isEmpty else { return [:] }
         let center = CGPoint(x: size.width / 2, y: size.height / 2)
-        let radius = max(110, min(size.width, size.height) * 0.34)
+        let radius = max(140, min(size.width, size.height) * 0.35)
         var result: [UUID: CGPoint] = [:]
 
         for (index, person) in people.enumerated() {
             let angle = (Double(index) / Double(people.count)) * (Double.pi * 2) - Double.pi / 2
-            let ringOffset = people.count > 9 && index % 2 == 1 ? 0.72 : 1.0
+            let ringOffset = people.count > 14 && index % 2 == 1
+                ? 0.68
+                : 1.0
             result[person.id] = CGPoint(
                 x: center.x + CGFloat(cos(angle)) * radius * ringOffset,
                 y: center.y + CGFloat(sin(angle)) * radius * ringOffset
@@ -139,37 +273,100 @@ struct NetworkView: View {
     }
 
     private var legend: some View {
-        HStack(spacing: 14) {
-            ForEach(RelationshipKind.allCases, id: \.self) { kind in
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(color(for: kind))
-                        .frame(width: 8, height: 8)
-                    Text(kind.displayName)
-                        .font(.caption)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 14) {
+                ForEach(RelationshipKind.allCases, id: \.self) { kind in
+                    HStack(spacing: 6) {
+                        Text(edgeMarker(for: kind))
+                            .font(.caption2.weight(.black))
+                            .foregroundStyle(color(for: kind))
+                            .frame(width: 20, height: 20)
+                            .background(
+                                color(for: kind).opacity(0.12),
+                                in: Circle()
+                            )
+                        Text(kind.displayName)
+                            .font(.caption)
+                    }
                 }
+                Divider().frame(height: 18)
+                Text("gestrichelt = einseitig")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            Divider().frame(height: 18)
-            Text("gestrichelt = einseitig")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 9)
-        .background(.ultraThinMaterial, in: Capsule())
+        .background(
+            .ultraThinMaterial,
+            in: RoundedRectangle(cornerRadius: 16)
+        )
+        .frame(maxWidth: 900)
+    }
+
+    private var accessibleConnections: [NetworkConnection] {
+        NetworkConnection.rows(from: store.data).filter { connection in
+            guard let selectedKind else { return true }
+            return connection.kind == selectedKind
+        }
+    }
+
+    private var networkAccessibilityContent: some View {
+        VStack(alignment: .leading) {
+            Text("Beziehungsnetz")
+                .accessibilityAddTraits(.isHeader)
+
+            ForEach(store.data.people) { person in
+                Button("Profil von \(person.name) öffnen") {
+                    selectedPersonID = person.id
+                    section = .people
+                }
+            }
+
+            ForEach(accessibleConnections) { connection in
+                Text(
+                    "\(connection.firstPersonName) und "
+                        + "\(connection.secondPersonName): "
+                        + "\(connection.kind.displayName), "
+                        + (connection.isMutual ? "gegenseitig" : "einseitig")
+                )
+            }
+        }
     }
 
     private func color(for kind: RelationshipKind) -> Color {
         switch kind {
-        case .friendship: AppTheme.berry
-        case .family: .blue
-        case .romantic: .pink
-        case .school: .purple
-        case .work: .orange
-        case .acquaintance: .gray
-        case .other: .secondary
+        case .friendship: AppTheme.berryText
+        case .family: AppTheme.blueText
+        case .romantic: AppTheme.coralText
+        case .school: AppTheme.plumText
+        case .work: AppTheme.orangeText
+        case .acquaintance: AppTheme.neutralText
+        case .other: AppTheme.tealText
         }
     }
+
+    private func edgeMarker(for kind: RelationshipKind) -> String {
+        switch kind {
+        case .friendship: "Fr"
+        case .family: "Fa"
+        case .romantic: "♥"
+        case .school: "S"
+        case .work: "A"
+        case .acquaintance: "B"
+        case .other: "•"
+        }
+    }
+}
+
+private struct NetworkEdge: Identifiable {
+    let id: String
+    let pairKey: String
+    let firstPersonID: UUID
+    let secondPersonID: UUID
+    let kind: RelationshipKind
+    let isMutual: Bool
+    let lane: CGFloat
 }
 
 private enum NetworkManagementSection: String, CaseIterable, Identifiable {
@@ -225,7 +422,10 @@ private struct NetworkConnection: Identifiable {
         }
 
         let peopleByID = Dictionary(uniqueKeysWithValues: data.people.map { ($0.id, $0) })
-        let grouped = Dictionary(grouping: data.relationshipClaims) { claim in
+        let activeClaims = data.relationshipClaims.filter {
+            $0.status.supportsInference
+        }
+        let grouped = Dictionary(grouping: activeClaims) { claim in
             let ids = [claim.fromPersonID, claim.toPersonID].sorted {
                 $0.uuidString < $1.uuidString
             }
@@ -283,10 +483,11 @@ private struct NetworkConnection: Identifiable {
 private struct ConnectionEditorRequest: Identifiable {
     let id = UUID()
     let connection: NetworkConnection?
+    let baselineClaims: [RelationshipClaim]
 }
 
 private enum NetworkDeletionTarget {
-    case connection(NetworkConnection)
+    case connection(NetworkConnection, expectedClaims: [RelationshipClaim])
     case group(Group)
 }
 
@@ -358,7 +559,10 @@ private struct NetworkManagementView: View {
         }
         .frame(minWidth: 760, idealWidth: 860, minHeight: 560, idealHeight: 650)
         .sheet(item: $connectionEditor) { request in
-            NetworkConnectionEditorView(connection: request.connection)
+            NetworkConnectionEditorView(
+                connection: request.connection,
+                baselineClaims: request.baselineClaims
+            )
                 .environmentObject(store)
         }
         .sheet(item: $groupEditor) { group in
@@ -402,7 +606,10 @@ private struct NetworkManagementView: View {
                 .foregroundStyle(.blue)
                 Spacer()
                 Button {
-                    connectionEditor = ConnectionEditorRequest(connection: nil)
+                    connectionEditor = ConnectionEditorRequest(
+                        connection: nil,
+                        baselineClaims: store.data.relationshipClaims
+                    )
                 } label: {
                     Label("Verbindung hinzufügen", systemImage: "link.badge.plus")
                 }
@@ -469,7 +676,10 @@ private struct NetworkManagementView: View {
             Spacer()
 
             Button {
-                connectionEditor = ConnectionEditorRequest(connection: connection)
+                connectionEditor = ConnectionEditorRequest(
+                    connection: connection,
+                    baselineClaims: store.data.relationshipClaims
+                )
             } label: {
                 Label("Bearbeiten", systemImage: "pencil")
                     .labelStyle(.iconOnly)
@@ -477,7 +687,12 @@ private struct NetworkManagementView: View {
             .help("Verbindung bearbeiten")
 
             Button(role: .destructive) {
-                pendingDeletion = NetworkDeletionRequest(target: .connection(connection))
+                pendingDeletion = NetworkDeletionRequest(
+                    target: .connection(
+                        connection,
+                        expectedClaims: relationshipClaims(for: connection)
+                    )
+                )
             } label: {
                 Label("Löschen", systemImage: "trash")
                     .labelStyle(.iconOnly)
@@ -495,7 +710,7 @@ private struct NetworkManagementView: View {
                     systemImage: "sparkles"
                 )
                 .font(.caption)
-                .foregroundStyle(AppTheme.plum)
+                .foregroundStyle(AppTheme.plumText)
                 Spacer()
                 Button {
                     showingNewGroup = true
@@ -601,7 +816,7 @@ private struct NetworkManagementView: View {
     private var deletionMessage: String {
         guard let pendingDeletion else { return "" }
         switch pendingDeletion.target {
-        case let .connection(connection):
+        case let .connection(connection, _):
             return "Die Verbindung zwischen \(connection.firstPersonName) und \(connection.secondPersonName) wird in beiden Richtungen entfernt."
         case let .group(group):
             if group.status == .inferred {
@@ -616,22 +831,40 @@ private struct NetworkManagementView: View {
         pendingDeletion = nil
         do {
             switch request.target {
-            case let .connection(connection):
+            case let .connection(connection, expectedClaims):
                 try store.deleteRelationshipPair(
                     between: connection.firstPersonID,
                     and: connection.secondPersonID,
-                    kind: connection.kind
+                    kind: connection.kind,
+                    expecting: expectedClaims
                 )
-            case var .group(group):
+            case let .group(originalGroup):
+                var group = originalGroup
                 if group.status == .inferred {
                     group.status = .rejected
-                    try store.updateGroup(group)
+                    try store.updateGroup(group, expecting: originalGroup)
                 } else {
-                    try store.deleteGroup(id: group.id)
+                    try store.deleteGroup(
+                        id: group.id,
+                        expecting: originalGroup
+                    )
                 }
             }
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private func relationshipClaims(
+        for connection: NetworkConnection
+    ) -> [RelationshipClaim] {
+        store.data.relationshipClaims.filter { claim in
+            let isSamePair =
+                (claim.fromPersonID == connection.firstPersonID
+                    && claim.toPersonID == connection.secondPersonID)
+                || (claim.fromPersonID == connection.secondPersonID
+                    && claim.toPersonID == connection.firstPersonID)
+            return isSamePair && claim.kind == connection.kind
         }
     }
 
@@ -665,6 +898,7 @@ private struct NetworkConnectionEditorView: View {
     @Environment(\.dismiss) private var dismiss
 
     let connection: NetworkConnection?
+    let baselineClaims: [RelationshipClaim]
 
     @State private var firstPersonID: UUID?
     @State private var secondPersonID: UUID?
@@ -674,8 +908,12 @@ private struct NetworkConnectionEditorView: View {
     @State private var notes: String
     @State private var errorMessage: String?
 
-    init(connection: NetworkConnection?) {
+    init(
+        connection: NetworkConnection?,
+        baselineClaims: [RelationshipClaim]
+    ) {
         self.connection = connection
+        self.baselineClaims = baselineClaims
         _firstPersonID = State(initialValue: connection?.firstPersonID)
         _secondPersonID = State(initialValue: connection?.secondPersonID)
         _kind = State(initialValue: connection?.kind ?? .friendship)
@@ -783,6 +1021,15 @@ private struct NetworkConnectionEditorView: View {
 
     private func save() {
         guard let firstPersonID, let secondPersonID else { return }
+        let affectedKinds = Set([kind, connection?.kind].compactMap { $0 })
+        let expectedClaims = baselineClaims.filter { claim in
+            let isSamePair =
+                (claim.fromPersonID == firstPersonID
+                    && claim.toPersonID == secondPersonID)
+                || (claim.fromPersonID == secondPersonID
+                    && claim.toPersonID == firstPersonID)
+            return isSamePair && affectedKinds.contains(claim.kind)
+        }
         do {
             try store.setRelationshipPair(
                 from: firstPersonID,
@@ -792,7 +1039,8 @@ private struct NetworkConnectionEditorView: View {
                 mutual: mutual,
                 notes: notes,
                 source: .manual,
-                replacingKind: connection?.kind
+                replacingKind: connection?.kind,
+                expecting: expectedClaims
             )
             dismiss()
         } catch {
@@ -919,8 +1167,8 @@ private struct NetworkGroupEditorView: View {
         do {
             if group == nil {
                 try store.addGroup(editedGroup)
-            } else {
-                try store.updateGroup(editedGroup)
+            } else if let group {
+                try store.updateGroup(editedGroup, expecting: group)
             }
             dismiss()
         } catch {
@@ -948,17 +1196,38 @@ private struct GraphPersonNode: View {
                     .frame(width: 62, height: 62)
                     .overlay {
                         Circle()
-                            .stroke(selected ? AppTheme.plum : .white, lineWidth: selected ? 4 : 3)
+                            .stroke(
+                                selected
+                                    ? AppTheme.coralText
+                                    : Color.primary.opacity(0.72),
+                                lineWidth: selected ? 5 : 3
+                            )
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if selected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(AppTheme.coralText)
+                                .background(.regularMaterial, in: Circle())
+                                .offset(x: 5, y: -5)
+                        }
                     }
                     .shadow(color: AppTheme.plum.opacity(0.2), radius: 9, y: 5)
 
                 Text(person.name)
                     .font(.caption.weight(.bold))
                     .foregroundStyle(AppTheme.ink)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 120)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 4)
-                    .background(.regularMaterial, in: Capsule())
+                    .background(
+                        .regularMaterial,
+                        in: RoundedRectangle(cornerRadius: 10)
+                    )
             }
+            .scaleEffect(selected ? 1.08 : 1)
         }
         .buttonStyle(.plain)
     }

@@ -107,6 +107,12 @@ public enum MediaKind: String, Codable, CaseIterable, Sendable {
     case video
 }
 
+public enum ProfileImageImportSource: String, Equatable, Sendable {
+    case file
+    case existingMedia
+    case camera
+}
+
 public enum GroupStatus: String, Codable, CaseIterable, Sendable {
     case manual
     case inferred
@@ -348,7 +354,7 @@ public struct Person: Identifiable, Codable, Hashable, Sendable {
     }
 
     public func age(on date: Date = Date(), calendar: Calendar = .current) -> Int? {
-        guard let birthday else { return nil }
+        guard let birthday, birthday <= date else { return nil }
         return calendar.dateComponents([.year], from: birthday, to: date).year
     }
 

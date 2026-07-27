@@ -5,6 +5,7 @@ struct ReviewView: View {
 
     @Binding var selectedPersonID: UUID?
     @Binding var section: AppSection?
+    @State private var errorMessage: String?
 
     var body: some View {
         ScrollView {
@@ -18,7 +19,7 @@ struct ReviewView: View {
                     StatusPill(
                         text: "\(store.inferredGroups.count + pendingObservations.count) offen",
                         systemImage: "checkmark.seal",
-                        tint: AppTheme.coral
+                        tint: AppTheme.coralText
                     )
                 }
 
@@ -52,6 +53,14 @@ struct ReviewView: View {
             .padding(28)
             .frame(maxWidth: 920)
         }
+        .alert("Änderung nicht möglich", isPresented: Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "")
+        }
     }
 
     private var pendingObservations: [Observation] {
@@ -63,7 +72,11 @@ struct ReviewView: View {
     private func changeObservation(_ observation: Observation, to status: ObservationStatus) {
         var updated = observation
         updated.status = status
-        try? store.updateObservation(updated)
+        do {
+            try store.updateObservation(updated)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }
 
@@ -71,15 +84,22 @@ private struct ReviewGroupCard: View {
     @EnvironmentObject private var store: LibraryStore
     let group: Group
 
-    @State private var proposedName: String = ""
+    @State private var originalGroup: Group
+    @State private var proposedName: String
     @State private var errorMessage: String?
+
+    init(group: Group) {
+        self.group = group
+        _originalGroup = State(initialValue: group)
+        _proposedName = State(initialValue: group.name)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
                 Image(systemName: "person.3.fill")
                     .font(.title2)
-                    .foregroundStyle(AppTheme.coral)
+                    .foregroundStyle(AppTheme.coralText)
                     .frame(width: 48, height: 48)
                     .background(AppTheme.coral.opacity(0.12), in: RoundedRectangle(cornerRadius: 15))
                 VStack(alignment: .leading, spacing: 4) {
@@ -93,7 +113,7 @@ private struct ReviewGroupCard: View {
                 StatusPill(
                     text: "\(Int(group.confidence * 100)) % sicher",
                     systemImage: "sparkles",
-                    tint: AppTheme.coral
+                    tint: AppTheme.coralText
                 )
             }
 
@@ -116,11 +136,6 @@ private struct ReviewGroupCard: View {
             }
         }
         .surfaceCard()
-        .onAppear {
-            if proposedName.isEmpty {
-                proposedName = group.name
-            }
-        }
         .alert("Änderung nicht möglich", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -145,7 +160,7 @@ private struct ReviewGroupCard: View {
         updated.status = .manual
         updated.confidence = 1
         do {
-            try store.updateGroup(updated)
+            try store.updateGroup(updated, expecting: originalGroup)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -155,7 +170,7 @@ private struct ReviewGroupCard: View {
         var updated = group
         updated.status = .rejected
         do {
-            try store.updateGroup(updated)
+            try store.updateGroup(updated, expecting: originalGroup)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -173,14 +188,14 @@ private struct ReviewObservationCard: View {
         HStack(spacing: 16) {
             Image(systemName: "sparkles.rectangle.stack")
                 .font(.title2)
-                .foregroundStyle(AppTheme.berry)
+                .foregroundStyle(AppTheme.berryText)
                 .frame(width: 48, height: 48)
                 .background(AppTheme.berry.opacity(0.11), in: RoundedRectangle(cornerRadius: 15))
             VStack(alignment: .leading, spacing: 4) {
                 Button(personName, action: openPerson)
                     .buttonStyle(.plain)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.berry)
+                    .foregroundStyle(AppTheme.berryText)
                 Text(observation.value)
                     .font(.headline)
                     .foregroundStyle(AppTheme.ink)

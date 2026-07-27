@@ -3,8 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var store: LibraryStore
 
-    @State private var allowMediaPreviews = true
-    @State private var allowOriginalMedia = false
+    @AppStorage("allowMediaPreviews") private var allowMediaPreviews = true
 
     var body: some View {
         Form {
@@ -20,10 +19,14 @@ struct SettingsView: View {
                 Label("Eigene Rubriken lassen sich jederzeit hinzufügen.", systemImage: "plus.square.on.square")
             }
 
-            Section("Codex-Zugriff") {
+            Section("Medien in der App") {
                 Toggle("Medienvorschauen erlauben", isOn: $allowMediaPreviews)
-                Toggle("Originalmedien erlauben", isOn: $allowOriginalMedia)
-                    .disabled(true)
+                Text("Wenn die Vorschau aus ist, bleiben Bilder und Videos gespeichert, werden aber in Freundeblick verdeckt.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Codex-Zugriff") {
                 Label("Datenbankänderungen über Codex sind erlaubt.", systemImage: "pencil.and.list.clipboard")
                 Label("Löschzugriffe und Originalmedien bleiben gesperrt.", systemImage: "checkmark.shield.fill")
 

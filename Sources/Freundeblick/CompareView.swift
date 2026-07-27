@@ -2,6 +2,7 @@ import Charts
 import SwiftUI
 
 enum ComparisonEngine {
+    private static let profileValueSeparator = "\u{1F}"
     private static let sensitiveProfileKeys = Set([
         "genderIdentity",
         "sexualOrientation",
@@ -50,8 +51,22 @@ enum ComparisonEngine {
     ) -> [String] {
         details
             .filter { !sensitiveProfileKeys.contains($0.key) }
-            .values
-            .flatMap { $0 }
+            .sorted { $0.key < $1.key }
+            .flatMap { key, values in
+                values.map { "\(key)\(profileValueSeparator)\($0)" }
+            }
+    }
+
+    static func displayComparableProfileValue(_ value: String) -> String {
+        let components = value.split(
+            separator: Character(profileValueSeparator),
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        )
+        guard components.count == 2 else { return value }
+        let key = String(components[0])
+        let detailValue = String(components[1])
+        return "\(ProfileSuggestionCatalog.displayLabel(for: key)): \(detailValue)"
     }
 
     static func sharedValues(_ collections: [[String]]) -> [String] {
@@ -80,10 +95,24 @@ struct CompareView: View {
     @State private var selectedIDs = Set<UUID>()
 
     private let seriesColors = [
-        AppTheme.plum,
-        AppTheme.berry,
-        AppTheme.coral,
-        Color.orange,
+        AppTheme.plumText,
+        AppTheme.berryText,
+        AppTheme.coralText,
+        AppTheme.blueText,
+    ]
+    private let pairColors = [
+        AppTheme.plumText,
+        AppTheme.berryText,
+        AppTheme.coralText,
+        AppTheme.blueText,
+        AppTheme.orangeText,
+        AppTheme.tealText,
+    ]
+    private let seriesSymbols = [
+        "circle.fill",
+        "square.fill",
+        "diamond.fill",
+        "triangle.fill",
     ]
 
     private var people: [Person] {
@@ -139,7 +168,7 @@ struct CompareView: View {
             HStack(alignment: .top) {
                 Label("Gesamt-Übereinstimmung", systemImage: "percent")
                     .font(.headline)
-                    .foregroundStyle(AppTheme.berry)
+                    .foregroundStyle(AppTheme.berryText)
                 Spacer()
                 Text("Durchschnitt bekannter Bereiche")
                     .font(.caption)
@@ -155,7 +184,7 @@ struct CompareView: View {
                     similarity in
                     pairSimilarityCard(
                         similarity,
-                        tint: seriesColors[index % seriesColors.count]
+                        tint: pairColors[index % pairColors.count]
                     )
                 }
             }
@@ -180,7 +209,8 @@ struct CompareView: View {
         HStack(spacing: 16) {
             SimilarityRing(
                 percentage: similarity.percentage,
-                tint: tint
+                tint: tint,
+                pairName: similarity.pair
             )
 
             VStack(alignment: .leading, spacing: 9) {
@@ -197,7 +227,7 @@ struct CompareView: View {
                             StatusPill(
                                 text: "\(category.title) \(Int(category.percentage.rounded())) %",
                                 systemImage: category.systemImage,
-                                tint: tint
+                                tint: AppTheme.plumText
                             )
                         }
                     }
@@ -223,7 +253,7 @@ struct CompareView: View {
             StatusPill(
                 text: "keine Bewertung",
                 systemImage: "equal.circle.fill",
-                tint: AppTheme.plum
+                tint: AppTheme.plumText
             )
         }
     }
@@ -233,7 +263,7 @@ struct CompareView: View {
             HStack {
                 Label("Profile auswählen", systemImage: "person.2.crop.square.stack.fill")
                     .font(.headline)
-                    .foregroundStyle(AppTheme.plum)
+                    .foregroundStyle(AppTheme.plumText)
                 Spacer()
                 Text("\(selectedPeople.count) von maximal 4")
                     .font(.caption)
@@ -246,18 +276,27 @@ struct CompareView: View {
                     Button {
                         toggle(person.id)
                     } label: {
-                        Label(
-                            person.name,
-                            systemImage: isSelected
-                                ? "checkmark.circle.fill"
-                                : "person.crop.circle"
-                        )
+                        HStack(spacing: 7) {
+                            Circle()
+                                .fill(color(for: index))
+                                .frame(width: 9, height: 9)
+                            Label(
+                                person.name,
+                                systemImage: isSelected
+                                    ? "checkmark.circle.fill"
+                                    : "person.crop.circle"
+                            )
+                        }
                         .font(.callout.weight(.semibold))
                         .padding(.horizontal, 11)
                         .padding(.vertical, 8)
-                        .foregroundStyle(isSelected ? .white : color(for: index))
+                        .foregroundStyle(
+                            isSelected ? Color.white : AppTheme.ink
+                        )
                         .background(
-                            isSelected ? color(for: index) : color(for: index).opacity(0.1),
+                            isSelected
+                                ? AppTheme.plum
+                                : color(for: index).opacity(0.1),
                             in: Capsule()
                         )
                     }
@@ -295,7 +334,7 @@ struct CompareView: View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Datenabdeckung", systemImage: "hexagon.fill")
                 .font(.headline)
-                .foregroundStyle(AppTheme.plum)
+                .foregroundStyle(AppTheme.plumText)
             Text("Zeigt, zu welchen Bereichen bereits Angaben gespeichert sind.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -323,7 +362,7 @@ struct CompareView: View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Gespeicherte Überschneidungen", systemImage: "circle.grid.2x2.fill")
                 .font(.headline)
-                .foregroundStyle(AppTheme.berry)
+                .foregroundStyle(AppTheme.berryText)
             Text("Anteil gemeinsamer Einträge – unbekannte Angaben zählen nicht als Gemeinsamkeit.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -356,10 +395,18 @@ struct CompareView: View {
             .chartForegroundStyleScale(
                 domain: pairNames,
                 range: pairNames.indices.map {
-                    seriesColors[$0 % seriesColors.count]
+                    pairColors[$0 % pairColors.count]
                 }
             )
-            .frame(height: 330)
+            .frame(
+                height: max(
+                    330,
+                    110
+                        + CGFloat(
+                            pairNames.count * 3
+                        ) * 24
+                )
+            )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .surfaceCard()
@@ -369,7 +416,7 @@ struct CompareView: View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Gespeicherte Datenmenge", systemImage: "chart.bar.xaxis")
                 .font(.headline)
-                .foregroundStyle(AppTheme.coral)
+                .foregroundStyle(AppTheme.coralText)
             Text("Absolute Anzahl gespeicherter Einträge je Bereich – keine Punktzahl und keine Rangliste.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -407,21 +454,21 @@ struct CompareView: View {
         VStack(alignment: .leading, spacing: 13) {
             Label("Was gemeinsam gespeichert ist", systemImage: "link.circle.fill")
                 .font(.headline)
-                .foregroundStyle(AppTheme.plum)
+                .foregroundStyle(AppTheme.plumText)
 
             sharedRow(
                 title: "Interessen",
                 values: ComparisonEngine.sharedValues(
                     selectedPeople.map(\.interests)
                 ),
-                tint: AppTheme.coral
+                tint: AppTheme.coralText
             )
             sharedRow(
                 title: "Gemüt",
                 values: ComparisonEngine.sharedValues(
                     selectedPeople.map(\.temperamentTags)
                 ),
-                tint: AppTheme.plum
+                tint: AppTheme.plumText
             )
             sharedRow(
                 title: "Steckbrief-Werte",
@@ -429,8 +476,8 @@ struct CompareView: View {
                     selectedPeople.map {
                         ComparisonEngine.comparableProfileValues($0.profileDetails)
                     }
-                ),
-                tint: AppTheme.berry
+                ).map(ComparisonEngine.displayComparableProfileValue),
+                tint: AppTheme.berryText
             )
         }
         .surfaceCard()
@@ -479,9 +526,15 @@ struct CompareView: View {
         FlowLayout(spacing: 10) {
             ForEach(Array(selectedPeople.enumerated()), id: \.element.id) { index, person in
                 HStack(spacing: 6) {
-                    Circle()
-                        .fill(seriesColors[index % seriesColors.count])
-                        .frame(width: 9, height: 9)
+                    Image(
+                        systemName: seriesSymbols[
+                            index % seriesSymbols.count
+                        ]
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(
+                        seriesColors[index % seriesColors.count]
+                    )
                     Text(person.name)
                         .font(.caption.weight(.semibold))
                 }
@@ -723,6 +776,7 @@ private struct PairSimilarity: Identifiable {
 private struct SimilarityRing: View {
     let percentage: Double?
     let tint: Color
+    let pairName: String
 
     private var progress: Double {
         min(max((percentage ?? 0) / 100, 0), 1)
@@ -750,7 +804,7 @@ private struct SimilarityRing: View {
         }
         .frame(width: 78, height: 78)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Gesamt-Übereinstimmung")
+        .accessibilityLabel("Gesamt-Übereinstimmung \(pairName)")
         .accessibilityValue(
             percentage.map { "\(Int($0.rounded())) Prozent" }
                 ?? "Nicht genug vergleichbare Angaben"
@@ -825,7 +879,7 @@ private struct ComparisonRadarChart: View {
                 )
             }
 
-            for item in series {
+            for (seriesIndex, item) in series.enumerated() {
                 let values = axes.indices.map { index in
                     min(max(item.values[safe: index] ?? 0, 0), 1)
                 }
@@ -835,7 +889,16 @@ private struct ComparisonRadarChart: View {
                     radius: radius
                 )
                 context.fill(polygon, with: .color(item.color.opacity(0.13)))
-                context.stroke(polygon, with: .color(item.color), lineWidth: 2.5)
+                context.stroke(
+                    polygon,
+                    with: .color(item.color),
+                    style: StrokeStyle(
+                        lineWidth: 3,
+                        lineCap: .round,
+                        lineJoin: .round,
+                        dash: lineDash(for: seriesIndex)
+                    )
+                )
 
                 for index in values.indices {
                     let point = polarPoint(
@@ -844,13 +907,9 @@ private struct ComparisonRadarChart: View {
                         center: center,
                         radius: radius * values[index]
                     )
-                    let marker = Path(
-                        ellipseIn: CGRect(
-                            x: point.x - 3.5,
-                            y: point.y - 3.5,
-                            width: 7,
-                            height: 7
-                        )
+                    let marker = markerPath(
+                        at: point,
+                        styleIndex: seriesIndex
                     )
                     context.fill(marker, with: .color(item.color))
                 }
@@ -859,9 +918,68 @@ private struct ComparisonRadarChart: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Radar-Diagramm zur gespeicherten Datenabdeckung")
         .accessibilityValue(
-            series.map { "\($0.name): \($0.values.map { Int($0 * 100) })" }
+            series.map { item in
+                let values = axes.indices.map { index in
+                    let percentage = Int(
+                        ((item.values[safe: index] ?? 0) * 100).rounded()
+                    )
+                    return "\(axes[index].title) \(percentage) Prozent"
+                }
+                return "\(item.name): \(values.joined(separator: ", "))"
+            }
                 .joined(separator: "; ")
         )
+    }
+
+    private func lineDash(for index: Int) -> [CGFloat] {
+        switch index % 4 {
+        case 1: [9, 5]
+        case 2: [2, 4]
+        case 3: [10, 3, 2, 3]
+        default: []
+        }
+    }
+
+    private func markerPath(
+        at point: CGPoint,
+        styleIndex: Int
+    ) -> Path {
+        let radius: CGFloat = 4
+        let bounds = CGRect(
+            x: point.x - radius,
+            y: point.y - radius,
+            width: radius * 2,
+            height: radius * 2
+        )
+        var marker = Path()
+        switch styleIndex % 4 {
+        case 1:
+            marker.addRect(bounds)
+        case 2:
+            marker.move(to: CGPoint(x: point.x, y: point.y - radius - 1))
+            marker.addLine(to: CGPoint(x: point.x + radius + 1, y: point.y))
+            marker.addLine(to: CGPoint(x: point.x, y: point.y + radius + 1))
+            marker.addLine(to: CGPoint(x: point.x - radius - 1, y: point.y))
+            marker.closeSubpath()
+        case 3:
+            marker.move(to: CGPoint(x: point.x, y: point.y - radius - 1))
+            marker.addLine(
+                to: CGPoint(
+                    x: point.x + radius + 1,
+                    y: point.y + radius
+                )
+            )
+            marker.addLine(
+                to: CGPoint(
+                    x: point.x - radius - 1,
+                    y: point.y + radius
+                )
+            )
+            marker.closeSubpath()
+        default:
+            marker.addEllipse(in: bounds)
+        }
+        return marker
     }
 
     private func path(
@@ -955,7 +1073,7 @@ private struct ComparisonPersonCard: View {
                 )
             }
             .font(.caption.weight(.semibold))
-            .foregroundStyle(color)
+            .foregroundStyle(AppTheme.ink)
 
             if !person.interests.isEmpty {
                 FlowLayout(spacing: 6) {

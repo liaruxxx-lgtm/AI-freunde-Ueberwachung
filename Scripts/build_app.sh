@@ -5,6 +5,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$PROJECT_DIR/.build"
 DIST_DIR="$PROJECT_DIR/dist"
 APP_DIR="$DIST_DIR/Freundeblick.app"
+ENTITLEMENTS="$PROJECT_DIR/Resources/Freundeblick.entitlements"
 
 export XDG_CACHE_HOME="/tmp/freundeblick-cache"
 export CLANG_MODULE_CACHE_PATH="/tmp/freundeblick-clang-cache"
@@ -39,8 +40,32 @@ chmod +x "$APP_DIR/Contents/MacOS/Freundeblick"
 chmod +x "$APP_DIR/Contents/Helpers/freundeblick_mcp.py"
 chmod +x "$APP_DIR/Contents/Helpers/freundeblick_cli.py"
 
-xattr -cr "$APP_DIR"
-codesign --force --deep --sign - "$APP_DIR"
+SIGNED=0
+for _ in 1 2 3 4 5; do
+  xattr -cr "$APP_DIR"
+  xattr -d com.apple.FinderInfo "$APP_DIR" 2>/dev/null || true
+  xattr -d "com.apple.fileprovider.fpfs#P" "$APP_DIR" 2>/dev/null || true
+  if codesign \
+    --force \
+    --deep \
+    --options runtime \
+    --entitlements "$ENTITLEMENTS" \
+    --sign - \
+    "$APP_DIR"; then
+    SIGNED=1
+    break
+  fi
+done
+if [[ "$SIGNED" -ne 1 ]]; then
+  xattr -cr "$APP_DIR"
+  codesign \
+    --force \
+    --deep \
+    --options runtime \
+    --entitlements "$ENTITLEMENTS" \
+    --sign - \
+    "$APP_DIR"
+fi
 
 # Some Documents/FileProvider volumes can re-add their bookkeeping attributes
 # immediately after signing. Clear only those harmless root attributes and retry
