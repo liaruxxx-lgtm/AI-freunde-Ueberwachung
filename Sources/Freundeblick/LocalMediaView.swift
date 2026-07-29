@@ -13,42 +13,60 @@ struct LocalMediaView: View {
     @State private var previewUnavailable = false
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [AppTheme.berry.opacity(0.23), AppTheme.apricot.opacity(0.34)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
+        GeometryReader { geometry in
+            ZStack {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [AppTheme.berry.opacity(0.23), AppTheme.apricot.opacity(0.34)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
                     )
+
+                if let image, allowMediaPreviews {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(
+                            width: geometry.size.width,
+                            height: geometry.size.height
+                        )
+                        .clipped()
+                } else {
+                    Image(systemName: placeholderSymbol)
+                        .font(.system(size: 38, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .symbolRenderingMode(.hierarchical)
+                }
+
+                if previewUnavailable {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(7)
+                        .background(AppTheme.coral, in: Circle())
+                        .padding(8)
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity,
+                            alignment: .bottomTrailing
+                        )
+                        .help("Die Mediendatei fehlt oder kann nicht geöffnet werden.")
+                }
+            }
+            .frame(
+                width: geometry.size.width,
+                height: geometry.size.height
+            )
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: cornerRadius,
+                    style: .continuous
                 )
-
-            if let image, allowMediaPreviews {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
-            } else {
-                Image(systemName: placeholderSymbol)
-                    .font(.system(size: 38, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .symbolRenderingMode(.hierarchical)
-            }
-
-            if previewUnavailable {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.white)
-                    .padding(7)
-                    .background(AppTheme.coral, in: Circle())
-                    .padding(8)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                    .help("Die Mediendatei fehlt oder kann nicht geöffnet werden.")
-            }
+            )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .task(id: previewTaskID) {
             image = nil
             previewUnavailable = false

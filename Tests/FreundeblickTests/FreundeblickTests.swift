@@ -79,13 +79,78 @@ final class FreundeblickTests: XCTestCase {
         )
     }
 
+    func testComparisonPersonSearchMatchesNameAliasAndLocation() {
+        let person = Person(
+            name: "Míla Müller",
+            aliases: ["Mimi"],
+            location: "Hamburg"
+        )
+
+        XCTAssertTrue(
+            ComparisonEngine.personMatchesSearch(
+                person,
+                query: ""
+            )
+        )
+        XCTAssertTrue(
+            ComparisonEngine.personMatchesSearch(
+                person,
+                query: "mila"
+            )
+        )
+        XCTAssertTrue(
+            ComparisonEngine.personMatchesSearch(
+                person,
+                query: "m"
+            ),
+            "Die Vergleichssuche soll bereits während der Eingabe filtern."
+        )
+        XCTAssertTrue(
+            ComparisonEngine.personMatchesSearch(
+                person,
+                query: "muller"
+            )
+        )
+        XCTAssertTrue(
+            ComparisonEngine.personMatchesSearch(
+                person,
+                query: "mimi hamburg"
+            )
+        )
+        XCTAssertFalse(
+            ComparisonEngine.personMatchesSearch(
+                person,
+                query: "Berlin"
+            )
+        )
+        XCTAssertFalse(
+            ComparisonEngine.personMatchesSearch(
+                person,
+                query: "mimi Berlin"
+            ),
+            "Bei mehreren Suchwörtern müssen alle zum Profil passen."
+        )
+    }
+
     func testProfileSuggestionsCompleteShortPrefixesAndExcludeSelections() {
+        XCTAssertTrue(
+            ProfileSuggestionCatalog.matches(
+                "r",
+                in: ProfileSuggestionCatalog.temperament
+            ).contains("ruhig")
+        )
         XCTAssertEqual(
             ProfileSuggestionCatalog.matches(
                 "ru",
                 in: ProfileSuggestionCatalog.temperament
             ).first,
             "ruhig"
+        )
+        XCTAssertTrue(
+            ProfileSuggestionCatalog.matches(
+                "m",
+                in: ProfileSuggestionCatalog.interests
+            ).contains("Musik")
         )
         XCTAssertEqual(
             ProfileSuggestionCatalog.matches(
@@ -101,6 +166,12 @@ final class FreundeblickTests: XCTestCase {
                 excluding: ["ruhig"]
             ).contains { $0.localizedCaseInsensitiveCompare("ruhig") == .orderedSame }
         )
+        XCTAssertTrue(
+            ProfileSuggestionCatalog.matches(
+                "n",
+                in: ProfileSuggestionCatalog.genderIdentities
+            ).contains("nichtbinär")
+        )
         XCTAssertEqual(
             ProfileSuggestionCatalog.matches(
                 "ni",
@@ -108,12 +179,60 @@ final class FreundeblickTests: XCTestCase {
             ).first,
             "nichtbinär"
         )
+        XCTAssertTrue(
+            ProfileSuggestionCatalog.matches(
+                "b",
+                in: ProfileSuggestionCatalog.sexualOrientations
+            ).contains("bisexuell")
+        )
         XCTAssertEqual(
             ProfileSuggestionCatalog.matches(
                 "bi",
                 in: ProfileSuggestionCatalog.sexualOrientations
             ).first,
             "bisexuell"
+        )
+        XCTAssertTrue(
+            ProfileSuggestionCatalog.autocompleteMatches(
+                "ru",
+                in: ProfileSuggestionCatalog.temperament
+            ).isEmpty
+        )
+        XCTAssertEqual(
+            ProfileSuggestionCatalog.autocompleteMatches(
+                "ruh",
+                in: ProfileSuggestionCatalog.temperament
+            ).first,
+            "ruhig"
+        )
+    }
+
+    func testAutocompleteSuggestionsRequireThreeCharacters() {
+        XCTAssertEqual(AutocompleteSuggestionPolicy.minimumCharacterCount, 3)
+        XCTAssertNil(LocationSearchService.searchQuery(from: " s "))
+        XCTAssertNil(LocationSearchService.searchQuery(from: " sc "))
+        XCTAssertEqual(LocationSearchService.searchQuery(from: " sch "), "sch")
+        XCTAssertNil(LocationSearchService.searchQuery(from: "   "))
+    }
+
+    func testLocationResultsAreRejectedAfterQueryFallsBelowThreeCharacters() {
+        XCTAssertTrue(
+            LocationSearchService.shouldAcceptResults(
+                for: " sch ",
+                currentQuery: "sch"
+            )
+        )
+        XCTAssertFalse(
+            LocationSearchService.shouldAcceptResults(
+                for: "sch",
+                currentQuery: "sc"
+            )
+        )
+        XCTAssertFalse(
+            LocationSearchService.shouldAcceptResults(
+                for: "sch",
+                currentQuery: "ber"
+            )
         )
     }
 
@@ -1965,6 +2084,494 @@ final class FreundeblickTests: XCTestCase {
         XCTAssertEqual(zoomed.width, 400, accuracy: 0.001)
     }
 
+    func testIPhonePhotoImportRecognizesDevicesImagesAndSafeSizes() throws {
+        XCTAssertTrue(
+            IPhonePhotoImportSupport.isIPhone(
+                productKind: "iPhone",
+                name: "Elias"
+            )
+        )
+        XCTAssertTrue(
+            IPhonePhotoImportSupport.isIPhone(
+                productKind: nil,
+                name: "Elias’ iPhone"
+            )
+        )
+        XCTAssertFalse(
+            IPhonePhotoImportSupport.isIPhone(
+                productKind: "iPad",
+                name: "Tablet"
+            )
+        )
+
+        XCTAssertTrue(
+            IPhonePhotoImportSupport.isImage(
+                uti: "public.heic",
+                filename: "IMG_1001.HEIC"
+            )
+        )
+        XCTAssertTrue(
+            IPhonePhotoImportSupport.isImage(
+                uti: nil,
+                filename: "IMG_1002.jpg"
+            )
+        )
+        XCTAssertFalse(
+            IPhonePhotoImportSupport.isImage(
+                uti: "public.mpeg-4",
+                filename: "IMG_1003.mov"
+            )
+        )
+
+        XCTAssertEqual(
+            try IPhonePhotoImportSupport.validatedByteCount(1),
+            1
+        )
+        XCTAssertThrowsError(
+            try IPhonePhotoImportSupport.validatedByteCount(0)
+        )
+        XCTAssertThrowsError(
+            try IPhonePhotoImportSupport.validatedByteCount(
+                Int64(ProfileImageSourceDecoder.maximumInputBytes) + 1
+            )
+        )
+
+        var gate = IPhoneImportOperationGate()
+        let firstOperation = gate.begin()
+        XCTAssertTrue(gate.accepts(firstOperation))
+        let secondOperation = gate.begin()
+        XCTAssertFalse(gate.accepts(firstOperation))
+        XCTAssertTrue(gate.accepts(secondOperation))
+        gate.invalidate()
+        XCTAssertFalse(gate.accepts(secondOperation))
+    }
+
+    func testIPhoneUnlockEventAndTimedOutSessionCanRecover() {
+        XCTAssertFalse(
+            IPhonePhotoImportSupport.resolvedAccessRestriction(
+                reportedByEvent: false,
+                deviceProperty: true
+            ),
+            "Das eindeutige Entsperr-Ereignis muss einen noch veralteten Gerätewert überstimmen."
+        )
+        XCTAssertTrue(
+            IPhonePhotoImportSupport.resolvedAccessRestriction(
+                reportedByEvent: true,
+                deviceProperty: false
+            )
+        )
+        XCTAssertTrue(
+            IPhonePhotoImportSupport.resolvedAccessRestriction(
+                reportedByEvent: nil,
+                deviceProperty: true
+            )
+        )
+        let unlockDate = Date(
+            timeIntervalSinceReferenceDate: 1_000
+        )
+        XCTAssertTrue(
+            IPhonePhotoImportSupport.shouldPreserveRecentUnlockEvent(
+                eventDate: unlockDate,
+                now: unlockDate.addingTimeInterval(4.999),
+                graceInterval: 5
+            )
+        )
+        XCTAssertFalse(
+            IPhonePhotoImportSupport.shouldPreserveRecentUnlockEvent(
+                eventDate: unlockDate,
+                now: unlockDate.addingTimeInterval(5),
+                graceInterval: 5
+            ),
+            "Nach der kurzen Entsperr-Karenz muss Aktualisieren wieder den echten Gerätewert prüfen."
+        )
+
+        XCTAssertEqual(
+            IPhonePhotoImportSupport
+                .sessionTransitionRecoveryDecision(
+                    isOpening: true,
+                    hasOpenSession: true
+                ),
+            .settled
+        )
+        XCTAssertEqual(
+            IPhonePhotoImportSupport
+                .sessionTransitionRecoveryDecision(
+                    isOpening: true,
+                    hasOpenSession: false
+                ),
+            .waitForCallbackOrReconnect
+        )
+        XCTAssertEqual(
+            IPhonePhotoImportSupport
+                .sessionTransitionRecoveryDecision(
+                    isOpening: false,
+                    hasOpenSession: false
+                ),
+            .settled
+        )
+        XCTAssertEqual(
+            IPhonePhotoImportSupport
+                .sessionTransitionRecoveryDecision(
+                    isOpening: false,
+                    hasOpenSession: true
+                ),
+            .waitForCallbackOrReconnect
+        )
+        XCTAssertTrue(
+            IPhonePhotoImportSupport
+                .shouldRequestBrowserAfterTransition(
+                    started: true,
+                    hasActiveConnection: false,
+                    hasPendingBrowserStart: false,
+                    browserAlreadyRunning: false
+                ),
+            "Nach Stop, erneutem Start und einem alten Session-Rückruf muss die iPhone-Suche wieder anlaufen."
+        )
+        XCTAssertFalse(
+            IPhonePhotoImportSupport
+                .shouldRequestBrowserAfterTransition(
+                    started: true,
+                    hasActiveConnection: true,
+                    hasPendingBrowserStart: false,
+                    browserAlreadyRunning: false
+                )
+        )
+        XCTAssertFalse(
+            IPhonePhotoImportSupport
+                .shouldRequestBrowserAfterTransition(
+                    started: true,
+                    hasActiveConnection: false,
+                    hasPendingBrowserStart: true,
+                    browserAlreadyRunning: false
+                )
+        )
+        XCTAssertFalse(
+            IPhonePhotoImportSupport
+                .shouldRequestBrowserAfterTransition(
+                    started: true,
+                    hasActiveConnection: false,
+                    hasPendingBrowserStart: false,
+                    browserAlreadyRunning: true
+                )
+        )
+    }
+
+    func testIPhoneBrowserRestartWaitsForConfirmedSessionCleanup() {
+        XCTAssertEqual(
+            IPhonePhotoImportSupport.sessionCleanupDecision(
+                hasOpenSession: false,
+                remainingRetries: 2
+            ),
+            .succeeded
+        )
+        XCTAssertEqual(
+            IPhonePhotoImportSupport.sessionCleanupDecision(
+                hasOpenSession: true,
+                remainingRetries: 2
+            ),
+            .retry
+        )
+        XCTAssertEqual(
+            IPhonePhotoImportSupport.sessionCleanupDecision(
+                hasOpenSession: true,
+                remainingRetries: 0
+            ),
+            .failed
+        )
+        XCTAssertEqual(
+            IPhonePhotoImportSupport.sessionCleanupTimeoutDecision(
+                hasOpenSession: true,
+                completedRetries: 0,
+                maximumRetries: 2
+            ),
+            .retry,
+            "Ein fehlender Close-Callback muss generationstreu erneut versucht werden."
+        )
+        XCTAssertEqual(
+            IPhonePhotoImportSupport.sessionCleanupTimeoutDecision(
+                hasOpenSession: true,
+                completedRetries: 2,
+                maximumRetries: 2
+            ),
+            .failed,
+            "Nach begrenzten Timeouts muss der Cleanup sichtbar fehlschlagen statt ewig zu blockieren."
+        )
+        XCTAssertEqual(
+            IPhonePhotoImportSupport.sessionCleanupTimeoutDecision(
+                hasOpenSession: false,
+                completedRetries: 2,
+                maximumRetries: 2
+            ),
+            .succeeded
+        )
+        XCTAssertTrue(
+            IPhonePhotoImportSupport.cleanupQueueBlocksBrowser(
+                hasCurrentDevice: true,
+                queuedDeviceCount: 1,
+                pendingTransitionCount: 0
+            )
+        )
+        XCTAssertTrue(
+            IPhonePhotoImportSupport.cleanupQueueBlocksBrowser(
+                hasCurrentDevice: false,
+                queuedDeviceCount: 2,
+                pendingTransitionCount: 0
+            ),
+            "Auch der zweite wartende Close-Auftrag muss neue Browserläufe blockieren."
+        )
+        XCTAssertFalse(
+            IPhonePhotoImportSupport.cleanupQueueBlocksBrowser(
+                hasCurrentDevice: false,
+                queuedDeviceCount: 0,
+                pendingTransitionCount: 0
+            )
+        )
+        XCTAssertTrue(
+            IPhonePhotoImportSupport.cleanupQueueBlocksBrowser(
+                hasCurrentDevice: false,
+                queuedDeviceCount: 0,
+                pendingTransitionCount: 1
+            ),
+            "Eine verwaiste Open-/Close-Transition muss auch über Controller-Deinit hinweg blockieren."
+        )
+
+        XCTAssertTrue(
+            IPhonePhotoImportSupport.allowsBrowserStart(
+                started: true,
+                pendingGenerationMatches: true,
+                browserAlreadyRunning: false,
+                sessionCleanupBlocksStart: false,
+                sessionTransitionBlocksStart: false
+            )
+        )
+        XCTAssertFalse(
+            IPhonePhotoImportSupport.allowsBrowserStart(
+                started: true,
+                pendingGenerationMatches: false,
+                browserAlreadyRunning: false,
+                sessionCleanupBlocksStart: false,
+                sessionTransitionBlocksStart: false
+            ),
+            "Ein veralteter queued Restart darf den aktuellen Browser nicht starten."
+        )
+        XCTAssertFalse(
+            IPhonePhotoImportSupport.allowsBrowserStart(
+                started: true,
+                pendingGenerationMatches: true,
+                browserAlreadyRunning: false,
+                sessionCleanupBlocksStart: true,
+                sessionTransitionBlocksStart: false
+            ),
+            "Eine noch offene oder fehlgeschlagene Session-Bereinigung muss den Browserstart blockieren."
+        )
+        XCTAssertFalse(
+            IPhonePhotoImportSupport.allowsBrowserStart(
+                started: true,
+                pendingGenerationMatches: true,
+                browserAlreadyRunning: true,
+                sessionCleanupBlocksStart: false,
+                sessionTransitionBlocksStart: false
+            ),
+            "Dieselbe Browser-Instanz darf nicht mehrfach gestartet werden."
+        )
+        XCTAssertFalse(
+            IPhonePhotoImportSupport.allowsBrowserStart(
+                started: true,
+                pendingGenerationMatches: true,
+                browserAlreadyRunning: false,
+                sessionCleanupBlocksStart: false,
+                sessionTransitionBlocksStart: true
+            ),
+            "Eine laufende Open-/Close-Transition muss einen neuen Browserlauf blockieren."
+        )
+
+        XCTAssertEqual(
+            IPhonePhotoImportSupport.browserEnumerationTimeoutDecision(
+                completedRecoveries: 0,
+                maximumRecoveries: 2
+            ),
+            .retry(nextAttempt: 1)
+        )
+        XCTAssertEqual(
+            IPhonePhotoImportSupport.browserEnumerationTimeoutDecision(
+                completedRecoveries: 2,
+                maximumRecoveries: 2
+            ),
+            .fail
+        )
+        XCTAssertFalse(
+            IPhonePhotoImportSupport.browserCallbackCompletesEnumeration(
+                isSupportedDevice: false,
+                moreComing: true
+            ),
+            "Ein nichtterminaler Browser-Callback darf den Watchdog nicht dauerhaft abschalten."
+        )
+        XCTAssertTrue(
+            IPhonePhotoImportSupport.browserCallbackCompletesEnumeration(
+                isSupportedDevice: true,
+                moreComing: true
+            ),
+            "Sobald ein iPhone gefunden wurde, darf ein ausbleibender Scanner-Abschluss die aktive Verbindung nicht mehr verwerfen."
+        )
+        XCTAssertTrue(
+            IPhonePhotoImportSupport.browserCallbackCompletesEnumeration(
+                isSupportedDevice: false,
+                moreComing: false
+            )
+        )
+
+        let progressDate = Date(timeIntervalSinceReferenceDate: 1_000)
+        XCTAssertFalse(
+            IPhonePhotoImportSupport.hasTimedOut(
+                since: progressDate,
+                now: progressDate.addingTimeInterval(19.999),
+                timeout: 20
+            )
+        )
+        XCTAssertTrue(
+            IPhonePhotoImportSupport.hasTimedOut(
+                since: progressDate,
+                now: progressDate.addingTimeInterval(20),
+                timeout: 20
+            ),
+            "Katalog-, Thumbnail- und Transfer-Wächter müssen an ihrer festen Grenze auslösen."
+        )
+
+        XCTAssertTrue(
+            IPhonePhotoImportSupport.shouldCloseStaleSession(
+                hasOpenSession: true,
+                isSessionDevice: false,
+                isActiveDevice: false,
+                isTransitionDevice: false,
+                matchesCurrentDeviceID: false
+            )
+        )
+        XCTAssertFalse(
+            IPhonePhotoImportSupport.shouldCloseStaleSession(
+                hasOpenSession: true,
+                isSessionDevice: true,
+                isActiveDevice: true,
+                isTransitionDevice: false,
+                matchesCurrentDeviceID: true
+            ),
+            "Ein stale Callback darf eine inzwischen gültige Session nicht schließen."
+        )
+        XCTAssertFalse(
+            IPhonePhotoImportSupport.shouldCloseStaleSession(
+                hasOpenSession: true,
+                isSessionDevice: false,
+                isActiveDevice: true,
+                isTransitionDevice: true,
+                matchesCurrentDeviceID: true
+            ),
+            "Ein stale Callback darf eine neue Transition desselben Geräts nicht schließen."
+        )
+        XCTAssertFalse(
+            IPhonePhotoImportSupport.shouldCloseStaleSession(
+                hasOpenSession: true,
+                isSessionDevice: false,
+                isActiveDevice: false,
+                isTransitionDevice: false,
+                matchesCurrentDeviceID: true
+            ),
+            "Eine alte Objektinstanz darf die neue Generation desselben iPhones nicht schließen."
+        )
+    }
+
+    func testTimedOutOrphanTransitionKeepsBlockingUntilLateCallback() {
+        var registry =
+            IPhoneOrphanTransitionBarrierRegistry<String>()
+        let transitionToken = UUID()
+        let resetGeneration = UUID()
+
+        XCTAssertTrue(registry.register(
+            transitionToken: transitionToken,
+            deviceID: "iphone-a",
+            resetObservationGeneration: resetGeneration
+        ))
+        XCTAssertTrue(registry.markTimedOut(
+            transitionToken: transitionToken,
+            deviceID: "iphone-a"
+        ))
+        XCTAssertTrue(
+            registry.blocksBrowserStart,
+            "Der Timeout darf eine Operation mit unbekanntem Ausgang nicht für einen neuen Browserlauf freigeben."
+        )
+        XCTAssertTrue(registry.hasTimedOutBarrier)
+        XCTAssertTrue(registry.containsTransition(
+            token: transitionToken,
+            deviceID: "iphone-a"
+        ))
+
+        XCTAssertTrue(registry.resolve(
+            transitionToken: transitionToken,
+            deviceID: "iphone-a"
+        ))
+        XCTAssertFalse(
+            registry.blocksBrowserStart,
+            "Erst der konkrete späte Callback darf genau seine Barrier auflösen; eine danach offene Session wird vom Coordinator noch geschlossen."
+        )
+    }
+
+    func testStaleOrphanCallbackCannotResolveNewerBarrier() {
+        var registry =
+            IPhoneOrphanTransitionBarrierRegistry<String>()
+        let staleToken = UUID()
+        let newerToken = UUID()
+        let staleResetGeneration = UUID()
+        let newerResetGeneration = UUID()
+
+        XCTAssertTrue(registry.register(
+            transitionToken: staleToken,
+            deviceID: "iphone-a",
+            resetObservationGeneration: staleResetGeneration
+        ))
+        XCTAssertTrue(registry.resolve(
+            transitionToken: staleToken,
+            deviceID: "iphone-a"
+        ))
+        XCTAssertTrue(registry.register(
+            transitionToken: newerToken,
+            deviceID: "iphone-a",
+            resetObservationGeneration: newerResetGeneration
+        ))
+
+        XCTAssertFalse(
+            registry.resolve(
+                transitionToken: staleToken,
+                deviceID: "iphone-a"
+            ),
+            "Ein doppelter alter Callback darf nicht per Geräteidentität eine neuere Generation bestätigen."
+        )
+        XCTAssertTrue(registry.containsTransition(
+            token: newerToken,
+            deviceID: "iphone-a"
+        ))
+        XCTAssertTrue(
+            registry.resolveAfterConfirmedDeviceReset(
+                deviceID: "iphone-a",
+                resetObservationGeneration:
+                    staleResetGeneration
+            ).isEmpty,
+            "Auch ein verspäteter Reset-Callback einer alten Beobachtergeneration darf die neuere Barrier nicht auflösen."
+        )
+        XCTAssertTrue(registry.containsTransition(
+            token: newerToken,
+            deviceID: "iphone-a"
+        ))
+        XCTAssertTrue(registry.blocksBrowserStart)
+        XCTAssertEqual(
+            registry.resolveAfterConfirmedDeviceReset(
+                deviceID: "iphone-a",
+                resetObservationGeneration:
+                    newerResetGeneration
+            ),
+            Set([newerToken]),
+            "Nur die aktuelle Reset-Beobachtergeneration darf ihre Barrier sicher auflösen."
+        )
+        XCTAssertFalse(registry.blocksBrowserStart)
+    }
+
     @MainActor
     func testProfileImageCropRendererCreatesSquarePNG() throws {
         let image = NSImage(size: NSSize(width: 1_200, height: 800))
@@ -2082,6 +2689,71 @@ final class FreundeblickTests: XCTestCase {
         XCTAssertEqual(
             (attributes[.posixPermissions] as? NSNumber)?.intValue,
             0o600
+        )
+    }
+
+    @MainActor
+    func testIPhoneProfileImageImportStoresOnlyCropAndSourceMetadata() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "freundeblick-tests-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = LibraryStore(
+            databaseURL: root.appendingPathComponent("friends.json"),
+            mediaDirectory: root.appendingPathComponent("media")
+        )
+        let person = Person(name: "Elias")
+        try store.addPerson(person)
+        let creationDate = Date(timeIntervalSince1970: 1_810_000_000)
+
+        let taggedPNG = try pngDataWithDescription(
+            "Private iPhone-Metadaten"
+        )
+        let cropped = try store.importCroppedProfileImage(
+            pngData: taggedPNG,
+            originalFilename: "IMG_4711.HEIC",
+            for: person.id,
+            source: .iPhoneImport,
+            capturedAt: creationDate
+        )
+
+        XCTAssertEqual(cropped.capturedAt, creationDate)
+        XCTAssertEqual(
+            cropped.tags,
+            ["Profilbild-Zuschnitt", "iPhone-Import"]
+        )
+        XCTAssertTrue(cropped.notes.contains("verbundenen iPhone"))
+        XCTAssertTrue(cropped.notes.contains("nur der quadratische"))
+        XCTAssertEqual(
+            cropped.originalFilename,
+            "IMG_4711-Profilbild.png"
+        )
+        XCTAssertEqual(
+            store.person(id: person.id)?.avatarMediaID,
+            cropped.id
+        )
+
+        let storedData = try Data(
+            contentsOf: store.mediaURL(for: cropped)
+        )
+        let source = try XCTUnwrap(
+            CGImageSourceCreateWithData(storedData as CFData, nil)
+        )
+        let properties = try XCTUnwrap(
+            CGImageSourceCopyPropertiesAtIndex(
+                source,
+                0,
+                nil
+            ) as? [CFString: Any]
+        )
+        let pngProperties =
+            properties[kCGImagePropertyPNGDictionary]
+                as? [CFString: Any]
+        XCTAssertNil(
+            pngProperties?[kCGImagePropertyPNGDescription]
         )
     }
 

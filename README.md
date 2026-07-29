@@ -5,15 +5,15 @@ Freundeblick ist eine native, lokale macOS-App für visuelle Personenprofile, Er
 ## Bereits nutzbar
 
 - Personen mit Name, Spitznamen, Geburtstag, Wohnort, Kurzbeschreibung, Charakter-Tags und Interessen
-- auswählbare Profilbilder: neues Bild lokal importieren, vorhandenes Personenfoto verwenden, wechseln oder ohne Löschen entfernen
+- auswählbare Profilbilder: Datei oder vorhandenes Personenfoto verwenden, über Mac-/Continuity-Kamera aufnehmen oder ein vorhandenes Foto direkt von einem per USB verbundenen iPhone importieren
 - großzügiges Bearbeiten-Fenster mit fester Bereichsnavigation; im Steckbrief bleibt für bessere Übersicht nur eine Kategorie gleichzeitig geöffnet
 - farbiger Personenbereich mit weichem Verlauf, dezenten Lichtflächen und klar hervorgehobener Profilauswahl
 - großer ausklappbarer Steckbrief mit über 50 freiwilligen Feldern von Lieblingsfarbe und Essen bis Automarke, Gewohnheiten, Träumen und spielerischen Fragen
 - frei benennbare eigene Steckbrief-Rubriken für alles, was nicht vorgegeben ist
 - Vergleichsansicht für zwei bis vier Personen mit farbigem Radar, Balkendiagrammen, Überschneidungen und Profilkarten
 - paarweise Familienverbindungen mit Verwandtschaftsart, offener Gegenbestätigung und ohne automatische Verknüpfung weiterer Angehöriger
-- Wohnort-Autovervollständigung ab zwei Zeichen sowie Auswahl über Apple Karten
-- ausklappbare Vorschlagslisten und Präfixvervollständigung für Gemüt, Interessen, Spitznamen und Medien-Tags
+- Wohnort-Autovervollständigung ab drei Zeichen sowie Auswahl über Apple Karten
+- jederzeit manuell ausklappbare Vorschlagslisten sowie automatische Präfixvervollständigung ab drei Zeichen für Gemüt, Interessen, Spitznamen und Medien-Tags
 - Social-Media-Profile und Webseiten mit Plattform, Handle und Bestätigungsstatus
 - gerichtete Beziehungsaussagen: Es bleibt nachvollziehbar, wer wen als Freund bezeichnet hat
 - visueller Netzwerkgraph mit Beziehungstypen und unterschiedlicher Darstellung für ein- und gegenseitige Angaben
@@ -32,6 +32,7 @@ Freundeblick ist eine native, lokale macOS-App für visuelle Personenprofile, Er
 ## Datenschutzregeln
 
 - Die Bibliothek bleibt lokal; für die optionale Web-Recherche ist kein API-Schlüssel nötig.
+- Beim iPhone-Import werden Vorschaubilder und grundlegende Metadaten für die Auswahl angezeigt. Die vollständigen Originaldaten werden nur für das ausdrücklich ausgewählte Foto geladen; dauerhaft gespeichert wird ausschließlich der bestätigte quadratische PNG-Zuschnitt.
 - Ortsvorschläge und Kartenauswahl verwenden Apple Karten; der eingegebene Ortssuchtext beziehungsweise ein angeklickter Kartenpunkt wird dafür an Apple gesendet.
 - Erst „Suche starten“ sendet den vorher sichtbaren Suchtext an Wikipedia und DuckDuckGo.
 - Standardmäßig werden nur der Name und ein ausdrücklich eingegebener Suchzusatz gesendet. Der gespeicherte Ortswert wird nur nach Aktivieren des Schalters ergänzt; beide Dienste erhalten technisch die IP-Adresse.
@@ -47,13 +48,13 @@ Freundeblick ist eine native, lokale macOS-App für visuelle Personenprofile, Er
 
 ## App starten
 
-Die fertig gebaute App liegt hier:
+Das fertig gebaute und nach dem Entpacken signaturgeprüfte App-Paket liegt hier:
 
 ```text
-dist/Freundeblick.app
+dist/Freundeblick.zip
 ```
 
-Sie kann direkt per Doppelklick geöffnet oder in den Programme-Ordner verschoben werden. Der Build enthält den absoluten Pfad zur gemeinsamen lokalen Datenbibliothek, damit App und Codex auch nach dem Verschieben dieselben Daten sehen.
+Entpacke die ZIP-Datei außerhalb dieses synchronisierten Projektordners und verschiebe `Freundeblick.app` am besten in den Programme-Ordner. Der Build enthält den absoluten Pfad zur gemeinsamen lokalen Datenbibliothek, damit App und Codex auch nach dem Verschieben dieselben Daten sehen.
 
 Neu bauen:
 

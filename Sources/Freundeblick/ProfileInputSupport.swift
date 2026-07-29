@@ -3,6 +3,16 @@ import CoreLocation
 @preconcurrency import MapKit
 import SwiftUI
 
+enum AutocompleteSuggestionPolicy {
+    static let minimumCharacterCount = 3
+
+    static func readyQuery(from value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= minimumCharacterCount else { return nil }
+        return trimmed
+    }
+}
+
 struct ProfileDetailCategory: Identifiable, Hashable {
     let id: String
     let title: String
@@ -352,6 +362,17 @@ enum ProfileSuggestionCatalog {
                     == .orderedAscending
             }
             .map(\.value)
+    }
+
+    static func autocompleteMatches(
+        _ query: String,
+        in suggestions: [String],
+        excluding selected: [String] = []
+    ) -> [String] {
+        guard let readyQuery = AutocompleteSuggestionPolicy.readyQuery(from: query) else {
+            return []
+        }
+        return matches(readyQuery, in: suggestions, excluding: selected)
     }
 
     static func definition(for key: String) -> ProfileDetailDefinition? {
@@ -817,7 +838,15 @@ struct TokenSuggestionField: View {
     @State private var input = ""
     @State private var suggestionsExpanded = false
 
-    private var matches: [String] {
+    private var automaticMatches: [String] {
+        ProfileSuggestionCatalog.autocompleteMatches(
+            input,
+            in: suggestions,
+            excluding: values
+        )
+    }
+
+    private var displayedMatches: [String] {
         ProfileSuggestionCatalog.matches(
             input,
             in: suggestions,
@@ -885,13 +914,13 @@ struct TokenSuggestionField: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
 
-                    if matches.isEmpty {
+                    if displayedMatches.isEmpty {
                         Text("Keine fertige Auswahl – mit Return kannst du deinen eigenen Eintrag übernehmen.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
                         FlowLayout(spacing: 7) {
-                            ForEach(matches.prefix(18), id: \.self) { suggestion in
+                            ForEach(displayedMatches.prefix(18), id: \.self) { suggestion in
                                 Button(suggestion) {
                                     add(suggestion)
                                 }
@@ -912,13 +941,13 @@ struct TokenSuggestionField: View {
 
     private var shouldShowSuggestions: Bool {
         suggestionsExpanded
-            || !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || AutocompleteSuggestionPolicy.readyQuery(from: input) != nil
     }
 
     private func addBestMatch() {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        if let best = matches.first,
+        if let best = automaticMatches.first,
            best.localizedCaseInsensitiveContains(trimmed) {
             add(best)
         } else {
@@ -944,6 +973,23 @@ final class LocationSearchService: NSObject, ObservableObject, MKLocalSearchComp
 
     private let completer = MKLocalSearchCompleter()
 
+    static func searchQuery(from query: String) -> String? {
+        AutocompleteSuggestionPolicy.readyQuery(from: query)
+    }
+
+    static func shouldAcceptResults(
+        for completedQuery: String,
+        currentQuery: String
+    ) -> Bool {
+        guard
+            let completedQuery = searchQuery(from: completedQuery),
+            let currentQuery = searchQuery(from: currentQuery)
+        else {
+            return false
+        }
+        return completedQuery == currentQuery
+    }
+
     override init() {
         super.init()
         completer.delegate = self
@@ -955,15 +1001,17 @@ final class LocationSearchService: NSObject, ObservableObject, MKLocalSearchComp
     }
 
     func update(query: String) {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count >= 2 else {
+        guard let searchQuery = Self.searchQuery(from: query) else {
             completions = []
             errorMessage = nil
             completer.queryFragment = ""
             return
         }
+        if completer.queryFragment != searchQuery {
+            completions = []
+        }
         errorMessage = nil
-        completer.queryFragment = trimmed
+        completer.queryFragment = searchQuery
     }
 
     func clear() {
@@ -973,8 +1021,16 @@ final class LocationSearchService: NSObject, ObservableObject, MKLocalSearchComp
     }
 
     func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
+        let completedQuery = completer.queryFragment
         let results = Array(completer.results.prefix(8))
         DispatchQueue.main.async {
+            guard Self.shouldAcceptResults(
+                for: completedQuery,
+                currentQuery: self.completer.queryFragment
+            )
+            else {
+                return
+            }
             self.completions = results
             self.errorMessage = nil
         }
@@ -985,6 +1041,11 @@ final class LocationSearchService: NSObject, ObservableObject, MKLocalSearchComp
         didFailWithError error: Error
     ) {
         DispatchQueue.main.async {
+            guard Self.searchQuery(
+                from: self.completer.queryFragment
+            ) != nil else {
+                return
+            }
             self.completions = []
             self.errorMessage = "Ortsvorschläge sind gerade nicht erreichbar."
         }

@@ -767,6 +767,7 @@ struct ProfileCameraCaptureView: View {
 
     let initialKind: ProfileCameraKind
     let onChooseFile: () -> Void
+    let onImportFromIPhone: () -> Void
     let onCapture: (Data, Date, String) throws -> Void
 
     @StateObject private var camera =
@@ -777,10 +778,12 @@ struct ProfileCameraCaptureView: View {
     init(
         initialKind: ProfileCameraKind,
         onChooseFile: @escaping () -> Void,
+        onImportFromIPhone: @escaping () -> Void,
         onCapture: @escaping (Data, Date, String) throws -> Void
     ) {
         self.initialKind = initialKind
         self.onChooseFile = onChooseFile
+        self.onImportFromIPhone = onImportFromIPhone
         self.onCapture = onCapture
         _selectedKind = State(initialValue: initialKind)
     }
@@ -945,6 +948,9 @@ struct ProfileCameraCaptureView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(AppTheme.berry)
+                    if selectedKind == .iPhone {
+                        iPhoneImportAlternativeButton
+                    }
                     fileAlternativeButton
                 }
             }
@@ -966,6 +972,9 @@ struct ProfileCameraCaptureView: View {
                         openCameraPrivacySettings()
                     }
                     .buttonStyle(.borderedProminent)
+                    if selectedKind == .iPhone {
+                        iPhoneImportAlternativeButton
+                    }
                     fileAlternativeButton
                 }
             }
@@ -986,6 +995,9 @@ struct ProfileCameraCaptureView: View {
                 HStack {
                     Button("Erneut suchen", action: camera.refresh)
                         .buttonStyle(.borderedProminent)
+                    if kind == .iPhone {
+                        iPhoneImportAlternativeButton
+                    }
                     fileAlternativeButton
                 }
             }
@@ -998,6 +1010,9 @@ struct ProfileCameraCaptureView: View {
                 HStack {
                     Button("Erneut versuchen", action: camera.refresh)
                         .buttonStyle(.borderedProminent)
+                    if selectedKind == .iPhone {
+                        iPhoneImportAlternativeButton
+                    }
                     fileAlternativeButton
                 }
             }
@@ -1082,6 +1097,15 @@ struct ProfileCameraCaptureView: View {
         Button("Datei auswählen") {
             camera.stop()
             onChooseFile()
+            dismiss()
+        }
+        .buttonStyle(.bordered)
+    }
+
+    private var iPhoneImportAlternativeButton: some View {
+        Button("Vom iPhone importieren") {
+            camera.stop()
+            onImportFromIPhone()
             dismiss()
         }
         .buttonStyle(.bordered)

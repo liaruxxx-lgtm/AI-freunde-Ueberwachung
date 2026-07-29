@@ -111,6 +111,7 @@ public enum ProfileImageImportSource: String, Equatable, Sendable {
     case file
     case existingMedia
     case camera
+    case iPhoneImport
 }
 
 public enum GroupStatus: String, Codable, CaseIterable, Sendable {

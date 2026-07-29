@@ -1347,12 +1347,19 @@ public final class LibraryStore: ObservableObject {
         let displayFilename = cleanOriginalName.isEmpty
             ? "Profilbild-Zuschnitt.png"
             : "\(URL(fileURLWithPath: cleanOriginalName).deletingPathExtension().lastPathComponent)-Profilbild.png"
-        let tags = source == .camera
-            ? ["Profilbild-Zuschnitt", "Kameraaufnahme"]
-            : ["Profilbild-Zuschnitt"]
-        let notes = source == .camera
-            ? "Direkt mit einer Kamera aufgenommen; gespeichert wurde nur der quadratische Profilbild-Zuschnitt."
-            : "Quadratischer Profilbild-Zuschnitt; das ursprüngliche Bild wurde nicht verändert."
+        let tags: [String]
+        let notes: String
+        switch source {
+        case .camera:
+            tags = ["Profilbild-Zuschnitt", "Kameraaufnahme"]
+            notes = "Direkt mit einer Kamera aufgenommen; gespeichert wurde nur der quadratische Profilbild-Zuschnitt."
+        case .iPhoneImport:
+            tags = ["Profilbild-Zuschnitt", "iPhone-Import"]
+            notes = "Von einem verbundenen iPhone importiert; gespeichert wurde nur der quadratische Profilbild-Zuschnitt."
+        case .file, .existingMedia:
+            tags = ["Profilbild-Zuschnitt"]
+            notes = "Quadratischer Profilbild-Zuschnitt; das ursprüngliche Bild wurde nicht verändert."
+        }
         let item = MediaItem(
             storedFilename: storedFilename,
             originalFilename: displayFilename,

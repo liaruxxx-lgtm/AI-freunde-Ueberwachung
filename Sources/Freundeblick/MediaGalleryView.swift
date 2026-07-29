@@ -926,7 +926,7 @@ private struct MediaEditorView: View {
                     Section("Eigene Angaben") {
                         TokenSuggestionField(
                             title: "Medien-Tags",
-                            placeholder: "Tag eingeben, z. B. „Ur“",
+                            placeholder: "Tag eingeben, z. B. „Url“",
                             suggestions: ProfileSuggestionCatalog.mediaTags
                                 + store.data.media.flatMap(\.tags),
                             tint: AppTheme.berryText,

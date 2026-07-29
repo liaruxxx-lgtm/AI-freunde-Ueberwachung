@@ -15,13 +15,22 @@ struct SettingsView: View {
 
             Section("Steckbrief-Eingabe") {
                 Label("Über 50 freiwillige Angaben sind in ausklappbare Bereiche sortiert.", systemImage: "list.bullet.clipboard.fill")
-                Label("Kurze Eingaben werden mit passenden Wörtern und Werten ergänzt.", systemImage: "text.badge.checkmark")
+                Label("Automatische Vorschläge erscheinen ab drei Zeichen; die manuelle Auswahlliste lässt sich jederzeit öffnen.", systemImage: "text.badge.checkmark")
                 Label("Eigene Rubriken lassen sich jederzeit hinzufügen.", systemImage: "plus.square.on.square")
             }
 
             Section("Medien in der App") {
                 Toggle("Medienvorschauen erlauben", isOn: $allowMediaPreviews)
                 Text("Wenn die Vorschau aus ist, bleiben Bilder und Videos gespeichert, werden aber in Freundeblick verdeckt.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Profilbilder vom iPhone") {
+                Label("Vorhandene Fotos lassen sich von einem per USB verbundenen iPhone auswählen.", systemImage: "iphone")
+                Label("Das iPhone muss entsperrt sein und diesem Mac vertrauen.", systemImage: "lock.open.fill")
+                Label("Gespeichert wird nur der von dir bestätigte quadratische Zuschnitt.", systemImage: "crop")
+                Text("Der iPhone-Import ist von der Continuity-Camera-Aufnahme getrennt. Für die Auswahl zeigt Freundeblick Vorschaubilder und grundlegende Metadaten an. Das Original bleibt unverändert auf dem iPhone; dauerhaft gespeichert wird nur dein Zuschnitt.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -54,7 +63,7 @@ struct SettingsView: View {
             }
 
             Section("Ortsvorschläge & Karte") {
-                Label("Ortsvorschläge erscheinen ab zwei eingegebenen Zeichen.", systemImage: "text.magnifyingglass")
+                Label("Ortsvorschläge erscheinen ab drei eingegebenen Zeichen.", systemImage: "text.magnifyingglass")
                 Label("Die Karte erlaubt eine Auswahl per Suche oder Mausklick.", systemImage: "map.fill")
                 Text("Ortsvorschläge, Kartendaten und die Rückübersetzung eines Kartenpunkts werden von Apple Karten bereitgestellt. Der Suchtext beziehungsweise der angeklickte Kartenpunkt wird dafür an Apple gesendet.")
                     .font(.caption)

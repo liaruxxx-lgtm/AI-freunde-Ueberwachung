@@ -32,6 +32,8 @@
     <string>Freundeblick verwendet die Kamera nur, damit du ein Profilbild aufnehmen kannst. Die Aufnahme bleibt lokal.</string>
     <key>NSCameraUseContinuityCameraDeviceType</key>
     <true/>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>Freundeblick verwendet den Fotozugriff nur, damit du ein ausgewähltes Bild von deinem verbundenen iPhone als Profilbild importieren kannst. Das Original wird nicht gespeichert.</string>
     <key>NSHumanReadableCopyright</key>
     <string>Privates, lokales Freundewissen.</string>
 </dict>

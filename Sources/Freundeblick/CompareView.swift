@@ -11,16 +11,29 @@ enum ComparisonEngine {
     static func normalizedSet(_ values: [String]) -> Set<String> {
         Set(
             values
-                .map {
-                    $0.trimmingCharacters(in: .whitespacesAndNewlines)
-                        .folding(
-                            options: [.caseInsensitive, .diacriticInsensitive],
-                            locale: .current
-                        )
-                        .lowercased()
-                }
+                .map(normalizedSearchValue)
                 .filter { !$0.isEmpty }
         )
+    }
+
+    static func personMatchesSearch(
+        _ person: Person,
+        query: String
+    ) -> Bool {
+        let tokens = query
+            .split(whereSeparator: \.isWhitespace)
+            .map { normalizedSearchValue(String($0)) }
+            .filter { !$0.isEmpty }
+        guard !tokens.isEmpty else { return true }
+
+        let searchableText = (
+            person.allNames
+                + [person.location ?? ""]
+        )
+        .map(normalizedSearchValue)
+        .joined(separator: " ")
+
+        return tokens.allSatisfy(searchableText.contains)
     }
 
     static func overlapPercentage(_ first: [String], _ second: [String]) -> Double {
@@ -84,6 +97,16 @@ enum ComparisonEngine {
                 }
             }
     }
+
+    private static func normalizedSearchValue(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(
+                options: [.caseInsensitive, .diacriticInsensitive],
+                locale: .current
+            )
+            .lowercased()
+    }
 }
 
 struct CompareView: View {
@@ -93,6 +116,7 @@ struct CompareView: View {
     @Binding var section: AppSection?
 
     @State private var selectedIDs = Set<UUID>()
+    @State private var personSearchText = ""
 
     private let seriesColors = [
         AppTheme.plumText,
@@ -123,6 +147,25 @@ struct CompareView: View {
 
     private var selectedPeople: [Person] {
         people.filter { selectedIDs.contains($0.id) }
+    }
+
+    private var matchingPeople: [Person] {
+        people.filter {
+            ComparisonEngine.personMatchesSearch(
+                $0,
+                query: personSearchText
+            )
+        }
+    }
+
+    private var availableSearchResults: [Person] {
+        matchingPeople.filter { !selectedIDs.contains($0.id) }
+    }
+
+    private var trimmedPersonSearchText: String {
+        personSearchText.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
     }
 
     var body: some View {
@@ -270,39 +313,71 @@ struct CompareView: View {
                     .foregroundStyle(.secondary)
             }
 
-            FlowLayout(spacing: 9) {
-                ForEach(Array(people.enumerated()), id: \.element.id) { index, person in
-                    let isSelected = selectedIDs.contains(person.id)
-                    Button {
-                        toggle(person.id)
-                    } label: {
-                        HStack(spacing: 7) {
-                            Circle()
-                                .fill(color(for: index))
-                                .frame(width: 9, height: 9)
-                            Label(
-                                person.name,
-                                systemImage: isSelected
-                                    ? "checkmark.circle.fill"
-                                    : "person.crop.circle"
-                            )
-                        }
-                        .font(.callout.weight(.semibold))
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 8)
-                        .foregroundStyle(
-                            isSelected ? Color.white : AppTheme.ink
-                        )
-                        .background(
-                            isSelected
-                                ? AppTheme.plum
-                                : color(for: index).opacity(0.1),
-                            in: Capsule()
+            comparisonPersonSearch
+
+            if !selectedPeople.isEmpty {
+                Text("Ausgewählt")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                FlowLayout(spacing: 9) {
+                    ForEach(selectedPeople) { person in
+                        comparisonPersonButton(
+                            person,
+                            isSelected: true
                         )
                     }
-                    .buttonStyle(.plain)
-                    .disabled(!isSelected && selectedIDs.count >= 4)
                 }
+            }
+
+            Divider()
+
+            HStack {
+                Text(
+                    trimmedPersonSearchText.isEmpty
+                        ? "Weitere Profile"
+                        : "Suchergebnisse"
+                )
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+                Spacer()
+
+                if !trimmedPersonSearchText.isEmpty {
+                    Text("\(matchingPeople.count) Treffer")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if availableSearchResults.isEmpty {
+                Label(
+                    emptySearchResultMessage,
+                    systemImage: matchingPeople.isEmpty
+                        ? "person.crop.circle.badge.questionmark"
+                        : "checkmark.circle.fill"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(.vertical, 4)
+            } else {
+                FlowLayout(spacing: 9) {
+                    ForEach(availableSearchResults) { person in
+                        comparisonPersonButton(
+                            person,
+                            isSelected: false
+                        )
+                    }
+                }
+            }
+
+            if selectedIDs.count >= 4 {
+                Label(
+                    "Maximal vier Personen. Entferne oben eine Person, um eine andere auszuwählen.",
+                    systemImage: "info.circle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(AppTheme.berryText)
             }
 
             Text("Die Diagramme vergleichen nur vorhandene Daten. Fehlende Angaben bedeuten nicht, dass eine Person weniger interessant oder weniger passend ist.")
@@ -310,6 +385,113 @@ struct CompareView: View {
                 .foregroundStyle(.secondary)
         }
         .surfaceCard()
+    }
+
+    private var comparisonPersonSearch: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField(
+                "Name, Spitzname oder Ort",
+                text: $personSearchText
+            )
+            .textFieldStyle(.plain)
+            .foregroundStyle(.primary)
+
+            if !personSearchText.isEmpty {
+                Button {
+                    personSearchText = ""
+                } label: {
+                    Label(
+                        "Suche löschen",
+                        systemImage: "xmark.circle.fill"
+                    )
+                    .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .frame(maxWidth: 560)
+        .background(
+            Color.primary.opacity(0.07),
+            in: RoundedRectangle(
+                cornerRadius: 12,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 12,
+                style: .continuous
+            )
+            .stroke(Color.primary.opacity(0.09), lineWidth: 1)
+        }
+        .accessibilityLabel("Personen für den Vergleich suchen")
+    }
+
+    private func comparisonPersonButton(
+        _ person: Person,
+        isSelected: Bool
+    ) -> some View {
+        let index = people.firstIndex {
+            $0.id == person.id
+        } ?? 0
+        let tint = color(for: index)
+
+        return Button {
+            toggle(person.id)
+        } label: {
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(tint)
+                    .frame(width: 9, height: 9)
+                Label(
+                    person.name,
+                    systemImage: isSelected
+                        ? "checkmark.circle.fill"
+                        : "plus.circle.fill"
+                )
+            }
+            .font(.callout.weight(.semibold))
+            .padding(.horizontal, 11)
+            .padding(.vertical, 8)
+            .foregroundStyle(
+                isSelected ? Color.white : AppTheme.ink
+            )
+            .background(
+                isSelected
+                    ? AppTheme.plum
+                    : tint.opacity(0.1),
+                in: Capsule()
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(!isSelected && selectedIDs.count >= 4)
+        .accessibilityLabel(
+            isSelected
+                ? "\(person.name) aus dem Vergleich entfernen"
+                : "\(person.name) zum Vergleich hinzufügen"
+        )
+        .help(
+            isSelected
+                ? "Aus dem Vergleich entfernen"
+                : "Zum Vergleich hinzufügen"
+        )
+    }
+
+    private var emptySearchResultMessage: String {
+        if matchingPeople.isEmpty,
+           !trimmedPersonSearchText.isEmpty {
+            return "Keine Person passt zu „\(trimmedPersonSearchText)“."
+        }
+        if !matchingPeople.isEmpty {
+            return "Alle passenden Profile sind bereits ausgewählt."
+        }
+        return "Keine weiteren Profile verfügbar."
     }
 
     @ViewBuilder

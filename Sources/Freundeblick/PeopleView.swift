@@ -1161,8 +1161,13 @@ private struct ProfileImagePickerView: View {
     @State private var cropCandidate: ProfileImageCropCandidate?
     @State private var cameraKind: ProfileCameraKind?
     @State private var pendingCameraCropCandidate: ProfileImageCropCandidate?
+    @State private var isIPhoneImportPresented = false
+    @State private var pendingIPhoneCropCandidate: ProfileImageCropCandidate?
     @State private var chooseFileAfterCamera = false
+    @State private var chooseIPhoneImportAfterCamera = false
     @State private var closeAfterCrop = false
+    @StateObject private var iPhoneImportController =
+        IPhonePhotoImportController()
 
     private var person: Person? {
         store.person(id: personID)
@@ -1194,6 +1199,14 @@ private struct ProfileImagePickerView: View {
                     } label: {
                         Label("Bilddatei auswählen …", systemImage: "photo")
                     }
+                    Button {
+                        isIPhoneImportPresented = true
+                    } label: {
+                        Label(
+                            "Vom iPhone importieren …",
+                            systemImage: "iphone"
+                        )
+                    }
                     Divider()
                     Button {
                         cameraKind = .mac
@@ -1203,7 +1216,10 @@ private struct ProfileImagePickerView: View {
                     Button {
                         cameraKind = .iPhone
                     } label: {
-                        Label("iPhone-Kamera", systemImage: "iphone")
+                        Label(
+                            "iPhone als Kamera (Continuity)",
+                            systemImage: "camera.fill"
+                        )
                     }
                 } label: {
                     Label("Neues Profilbild", systemImage: "photo.badge.plus")
@@ -1223,7 +1239,7 @@ private struct ProfileImagePickerView: View {
                         .foregroundStyle(AppTheme.berryText)
                     Text("Noch kein Bild vorhanden")
                         .font(.headline)
-                    Text("Wähle eine Datei oder nimm ein Foto mit der Mac- oder iPhone-Kamera auf. Danach kannst du den Ausschnitt verschieben und vergrößern.")
+                    Text("Wähle eine Datei, importiere ein vorhandenes Foto vom iPhone oder nimm ein neues Foto auf. Danach kannst du den Ausschnitt verschieben und vergrößern.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -1235,6 +1251,12 @@ private struct ProfileImagePickerView: View {
                             action: importProfileImage
                         )
                         sourceButton(
+                            title: "Vom iPhone",
+                            symbol: "iphone"
+                        ) {
+                            isIPhoneImportPresented = true
+                        }
+                        sourceButton(
                             title: "Mac-Kamera",
                             symbol: "laptopcomputer"
                         ) {
@@ -1242,7 +1264,7 @@ private struct ProfileImagePickerView: View {
                         }
                         sourceButton(
                             title: "iPhone-Kamera",
-                            symbol: "iphone"
+                            symbol: "camera.fill"
                         ) {
                             cameraKind = .iPhone
                         }
@@ -1321,7 +1343,7 @@ private struct ProfileImagePickerView: View {
                 if selectedAvatarID != nil {
                     Divider()
                     HStack {
-                        Text("Vorhandene Erinnerungsbilder bleiben unverändert. Bei Datei oder Kamera wird nur der neue Zuschnitt gespeichert.")
+                        Text("Vorhandene Erinnerungsbilder bleiben unverändert. Bei Datei, iPhone-Import oder Kamera wird nur der neue Zuschnitt gespeichert.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -1358,6 +1380,11 @@ private struct ProfileImagePickerView: View {
             if let pendingCameraCropCandidate {
                 self.pendingCameraCropCandidate = nil
                 cropCandidate = pendingCameraCropCandidate
+            } else if chooseIPhoneImportAfterCamera {
+                chooseIPhoneImportAfterCamera = false
+                DispatchQueue.main.async {
+                    isIPhoneImportPresented = true
+                }
             } else if chooseFileAfterCamera {
                 chooseFileAfterCamera = false
                 DispatchQueue.main.async {
@@ -1369,6 +1396,9 @@ private struct ProfileImagePickerView: View {
                 initialKind: kind,
                 onChooseFile: {
                     chooseFileAfterCamera = true
+                },
+                onImportFromIPhone: {
+                    chooseIPhoneImportAfterCamera = true
                 }
             ) {
                 data,
@@ -1379,6 +1409,23 @@ private struct ProfileImagePickerView: View {
                     sourceFilename: sourceFilename,
                     source: .camera,
                     capturedAt: capturedAt
+                )
+            }
+        }
+        .sheet(isPresented: $isIPhoneImportPresented, onDismiss: {
+            if let pendingIPhoneCropCandidate {
+                self.pendingIPhoneCropCandidate = nil
+                cropCandidate = pendingIPhoneCropCandidate
+            }
+        }) {
+            ProfileIPhoneImportView(
+                controller: iPhoneImportController
+            ) { photo in
+                pendingIPhoneCropCandidate = try makeCropCandidate(
+                    from: photo.data,
+                    sourceFilename: photo.filename,
+                    source: .iPhoneImport,
+                    capturedAt: photo.creationDate
                 )
             }
         }
@@ -1995,7 +2042,7 @@ struct PersonEditorView: View {
 
                 TokenSuggestionField(
                     title: "Gemüt",
-                    placeholder: "Gemüt eingeben, z. B. „ru“",
+                    placeholder: "Gemüt eingeben, z. B. „ruh“",
                     suggestions: ProfileSuggestionCatalog.temperament
                         + store.data.people.flatMap(\.temperamentTags),
                     tint: AppTheme.plumText,
@@ -2003,7 +2050,7 @@ struct PersonEditorView: View {
                 )
                 TokenSuggestionField(
                     title: "Interessen",
-                    placeholder: "Interesse eingeben, z. B. „Mu“",
+                    placeholder: "Interesse eingeben, z. B. „Mus“",
                     suggestions: ProfileSuggestionCatalog.interests
                         + store.data.people.flatMap(\.interests),
                     tint: AppTheme.coral,
