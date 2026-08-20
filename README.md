@@ -1,5 +1,16 @@
 # Freundeblick
 
+> [!WARNING]
+> **Projektstatus:** Dieses Projekt befindet sich in aktiver Entwicklung, ist noch
+> nicht fertiggestellt und kann unvollständige oder fehlerhafte Funktionen
+> enthalten. Änderungen können jederzeit und ohne Vorankündigung erfolgen.
+>
+> **Haftungshinweis:** Nutzung, Installation und Weiterverwendung erfolgen auf
+> eigene Gefahr. Soweit gesetzlich zulässig, wird keine Haftung für unmittelbare
+> oder mittelbare Schäden, Datenverluste, Fehlfunktionen, Sicherheitsprobleme
+> oder sonstige Folgen übernommen. Es gibt keine Garantie für Funktionsfähigkeit,
+> Richtigkeit, Sicherheit oder Eignung für einen bestimmten Zweck.
+
 Freundeblick ist eine native, lokale macOS-App für visuelle Personenprofile, Erinnerungen und Beziehungsnetze. Sie startet leer und speichert alle persönlichen Daten im Ordner `FreundeblickData`, der von Git ausgeschlossen ist.
 
 ## Bereits nutzbar
